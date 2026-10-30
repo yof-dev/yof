@@ -38,7 +38,7 @@ export interface LeakFinding { file: string; rule: string; match: string }
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
-    if (name === "node_modules" || name === "dist" || name === "coverage" || name === ".DS_Store") continue;
+    if (name === "node_modules" || name === ".git" || name === "dist" || name === "coverage" || name === ".DS_Store") continue;
     const p = join(dir, name);
     if (statSync(p).isDirectory()) walk(p, out);
     else out.push(p);

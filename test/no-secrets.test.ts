@@ -7,7 +7,7 @@ import { LEAK_RULES, scanForLeaks } from "./leak-rules";
 const ROOT = join(__dirname, "..");
 function walk(dir: string, out: string[] = []): string[] {
   for (const n of readdirSync(dir)) {
-    if (n === "node_modules" || n === "dist" || n === "coverage" || n === ".DS_Store") continue;
+    if (n === "node_modules" || n === ".git" || n === "dist" || n === "coverage" || n === ".DS_Store") continue;
     const p = join(dir, n);
     if (statSync(p).isDirectory()) walk(p, out); else out.push(p);
   }
