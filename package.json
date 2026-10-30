@@ -5,24 +5,55 @@
   "license": "Apache-2.0",
   "author": "Mondaily",
   "homepage": "https://yof.io",
-  "repository": { "type": "git", "url": "git+https://github.com/yof-dev/yof.git" },
-  "bugs": { "url": "https://github.com/yof-dev/yof/issues" },
-  "keywords": ["yof", "security", "secrets", "leaked-keys", "pre-commit", "typosquatting", "dependencies", "cli", "github-action"],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yof-dev/yof.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yof-dev/yof/issues"
+  },
+  "keywords": [
+    "yof",
+    "security",
+    "secrets",
+    "leaked-keys",
+    "pre-commit",
+    "typosquatting",
+    "dependencies",
+    "cli",
+    "github-action"
+  ],
   "type": "module",
-  "bin": { "yof": "./dist/bin.js" },
+  "bin": {
+    "yof": "dist/bin.js"
+  },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./package.json": "./package.json"
   },
-  "files": ["dist", "README.md", "LICENSE", "NOTICE", "CHANGELOG.md"],
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "CHANGELOG.md"
+  ],
   "sideEffects": false,
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
@@ -36,5 +67,8 @@
     "typescript": "^5.9.3",
     "vitest": "^2.1.9"
   },
-  "publishConfig": { "access": "public", "provenance": true }
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
 }
