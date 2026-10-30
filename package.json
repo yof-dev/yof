@@ -1,0 +1,40 @@
+{
+  "name": "@yof/cli",
+  "version": "0.1.0",
+  "description": "Catch leaked keys and made-up packages before they ship. Runs on your machine, rules only.",
+  "license": "Apache-2.0",
+  "author": "Mondaily",
+  "homepage": "https://yof.io",
+  "repository": { "type": "git", "url": "git+https://github.com/yof-dev/yof.git" },
+  "bugs": { "url": "https://github.com/yof-dev/yof/issues" },
+  "keywords": ["yof", "security", "secrets", "leaked-keys", "pre-commit", "typosquatting", "dependencies", "cli", "github-action"],
+  "type": "module",
+  "bin": { "yof": "./dist/bin.js" },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+      "require": { "types": "./dist/index.d.cts", "default": "./dist/index.cjs" }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "README.md", "LICENSE", "NOTICE", "CHANGELOG.md"],
+  "sideEffects": false,
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test && npm run build",
+    "prepublishOnly": "npm run check"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.0",
+    "tsup": "^8.5.1",
+    "typescript": "^5.9.3",
+    "vitest": "^2.1.9"
+  },
+  "publishConfig": { "access": "public", "provenance": true }
+}
