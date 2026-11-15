@@ -18,10 +18,18 @@ inputs:
   version:
     description: The @yof/cli version to run.
     required: false
-    default: "0.3.2"
+    default: "0.4.0"
 runs:
   using: composite
   steps:
+    # On a pull request yof reads .yof.yml and the accepted risks from the BASE branch, so a pull request cannot
+    # switch the check off for itself. A default checkout holds only the pull request's commit: fetch the base tip.
+    - name: Fetch the base branch's settings
+      if: startsWith(github.event_name, 'pull_request')
+      shell: bash
+      env:
+        BASE: ${{ github.base_ref }}
+      run: git fetch --no-tags --depth=1 origin "+refs/heads/${BASE}:refs/remotes/origin/${BASE}"
     - name: yof check
       shell: bash
       env:

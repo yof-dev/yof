@@ -4,24 +4,27 @@
  *   local       localhost, 127.0.0.1 or ::1 (your own machine). http is allowed only here.
  *   preview     a deployment of THIS repository that GitHub reports as successful for the commit under test (the
  *               GitHub Actions token reads it), at an address that is ALSO one of this repository's own:
- *                 - a preview address on Vercel, Netlify or Cloudflare Pages named after the repository, when the
- *                   deployment status was written by that platform's own GitHub app (a status anyone with write
- *                   access wrote proves nothing: security audit 3.2), or
- *                 - a host on the same site (registrable domain) as the config's app, once the app itself is proven
- *                   with the token below. On shared hosting (github.io, vercel.app, ...) two customers are never
- *                   one site: see TENANT_SUFFIXES.
+ *                 - a preview address on Vercel, Netlify or Cloudflare Pages named after the repository (or, on
+ *                   Vercel, after the project the deployment names), when the deployment status was written by that
+ *                   platform's own GitHub app (a status anyone with write access wrote proves nothing: security
+ *                   audit 3.2), or
+ *                 - a host on the same site (registrable domain) as the config's app, once yof confirms the app is
+ *                   proven for your account (below). On shared hosting (github.io, vercel.app, ...) two customers
+ *                   are never one site: see TENANT_SUFFIXES.
  *               A deployment status alone names any host its repository writes, so it is never proof on its own
- *               (security audit A5, 11 Nov 2026). A deployment GitHub marks as production, an environment named
- *               prod, production or live, and the app's own host all count as production.
- *   production  any other https host, proven the yof way: the token from your yof app (YOF_VERIFY_TOKEN) in
- *               /.well-known/yof-verify.txt, /yof-verify.txt, a <meta name="yof-verify"> tag or a DNS TXT record
- *               "yof-verify=TOKEN".
+ *               (security audit A5, 11 Nov 2026). A deployment GitHub marks as production, an environment whose name
+ *               starts with prod, production or live ("Production – shop" is how Vercel names one), and the app's
+ *               own host all count as production.
+ *   production  any other https host: the config's app, proven for YOUR yof account. The CLI asks yof (account.ts,
+ *               with YOF_HOOK_URL or YOF_API_KEY); yof answers from the account. The proof token on the site is
+ *               public, so finding it there proves nothing about who is running this (security audit 3.2), and the
+ *               CLI no longer reads it. No answer, or yof not reachable, means the host is not tested.
  *
  * Then the production rule: never against production unless the config turns it on for this app
  * ("production": { "enabled": true }). With it on, a light (read-only) run may go any time; a full run only inside the
  * agreed window ("window": "02:00-04:00", UTC).
  */
-import { resolveTxt as dnsResolveTxt } from "node:dns/promises";
+import { askYofProven } from "./account";
 import { inWindow, type AttackConfig } from "./config";
 import { USER_AGENT, type FetchFn } from "./http";
 
@@ -35,7 +38,6 @@ export type ProofResult = ProofOk | ProofRefused;
 
 export interface ProofDeps {
   fetch?: FetchFn;
-  resolveTxt?: (name: string) => Promise<string[][]>;
   env?: Record<string, string | undefined>;
   now?: Date;
 }
@@ -43,8 +45,23 @@ export interface ProofDeps {
 const LOOPBACK = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
 const GITHUB_API_DEFAULT = "https://api.github.com";
 
-/** A deployment environment that is production by name, whatever GitHub's production flag says. */
-export const PRODUCTION_ENV = /^(prod|production|live)$/i;
+/**
+ * A deployment environment that is production by name, whatever GitHub's production flag says. The name STARTS with
+ * prod, production or live as a whole word. Read from real deployments (11 Nov 2026): Vercel's GitHub app writes
+ * "Production" for a repository with one project and "Production – <project>" for one with several, and sets
+ * production_environment to false on both, so the flag alone and an exact-name match both missed a production build.
+ */
+export const PRODUCTION_ENV = /^(?:prod|production|live)(?![a-z0-9])/i;
+
+/**
+ * The project a platform names in a deployment's environment ("Preview – shop-web", "Production – shop-web": Vercel,
+ * for a repository with several projects), spelled as it appears in a host name. Null when the name carries none. Pure.
+ */
+export function environmentProject(environment: string | null | undefined): string | null {
+  const m = /^(?:preview|production)\s+[–—-]\s+(\S.*)$/i.exec((environment ?? "").trim());
+  const slug = (m?.[1] ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug || null;
+}
 
 /** Second-level labels under a two-letter country code that sell names (example.co.uk, example.com.au). */
 const PUBLIC_SECOND = new Set(["co", "com", "net", "org", "gov", "ac", "edu", "ltd", "plc", "ne", "or"]);
@@ -115,15 +132,18 @@ export function repoSlug(repo: string): string {
  *   Vercel   <project>.vercel.app, <project>-<hash>-<team>.vercel.app, <project>-git-<branch>-<team>.vercel.app
  *   Netlify  <site>.netlify.app, deploy-preview-<n>--<site>.netlify.app, <branch>--<site>.netlify.app
  *   Pages    <project>.pages.dev, <hash>.<project>.pages.dev, <branch>.<project>.pages.dev
+ * `vercelProject`: the project Vercel's own app named in the deployment's environment (environmentProject). A
+ * repository with several Vercel projects has previews named after each project, not after the repository; the caller
+ * passes it only when Vercel's app wrote both the deployment and its status.
  * Pure.
  */
-export function previewPlatformMatch(host: string, repo: string): boolean {
+export function previewPlatformMatch(host: string, repo: string, vercelProject?: string | null): boolean {
   const slug = repoSlug(repo);
   if (!slug) return false;
   const h = host.toLowerCase();
   const sub = (suffix: string) => (h.endsWith(`.${suffix}`) ? h.slice(0, -(suffix.length + 1)).split(".") : null);
   const v = sub("vercel.app");
-  if (v) return v.length === 1 && (v[0] === slug || v[0]!.startsWith(`${slug}-`));
+  if (v) return v.length === 1 && [slug, ...(vercelProject ? [vercelProject] : [])].some((s) => v[0] === s || v[0]!.startsWith(`${s}-`));
   const n = sub("netlify.app");
   if (n) return n.length === 1 && (n[0] === slug || n[0]!.endsWith(`--${slug}`));
   const p = sub("pages.dev");
@@ -137,6 +157,11 @@ export function previewPlatformMatch(host: string, repo: string): boolean {
  * "shop" plus a status naming shop-git-x-victim.vercel.app proved nothing. So a platform preview counts only when the
  * status was written by the platform's own GitHub app, which reports only addresses of projects linked to this
  * repository. GitHub sets the author of a status; an app's login ("name[bot]") cannot be taken by a person.
+ *
+ * Checked against real deployments on 11 Nov 2026 (public repositories, GitHub's REST API; the shape is kept in
+ * test/fixtures/github-vercel-deployments.json): Vercel's deployments and their statuses carry creator.login
+ * "vercel[bot]" with creator.type "Bot", and the preview address is in environment_url. The Netlify and Cloudflare
+ * names below are from those platforms' documentation and were not seen on a real deployment.
  */
 const PLATFORM_APPS: readonly { suffix: string; name: string; logins: readonly string[] }[] = [
   { suffix: "vercel.app", name: "Vercel", logins: ["vercel[bot]"] },
@@ -160,42 +185,22 @@ export function parseTarget(raw: string): { ok: true; url: URL } | ProofRefused 
   return { ok: true, url: u };
 }
 
-async function getText(f: FetchFn, url: string): Promise<{ status: number; body: string }> {
-  const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 10_000);
-  try {
-    const r = await f(url, { method: "GET", headers: { "User-Agent": USER_AGENT, Accept: "text/plain, text/html;q=0.9" }, redirect: "manual", signal: ctl.signal });
-    return { status: r.status, body: (await r.text()).slice(0, 200_000) };
-  } catch { return { status: 0, body: "" }; } finally { clearTimeout(t); }
-}
-
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-
-/** The yof proof on a live host: file, meta tag or DNS TXT, with the token from the person's yof app. */
-async function tokenProof(origin: string, host: string, token: string, f: FetchFn, txt: (n: string) => Promise<string[][]>): Promise<ProofMethod | null> {
-  for (const p of ["/.well-known/yof-verify.txt", "/yof-verify.txt"]) {
-    const r = await getText(f, `${origin}${p}`);
-    const first = r.body.split(/\r?\n/).map((l) => l.trim()).find(Boolean) ?? "";
-    if (r.status >= 200 && r.status < 300 && (first === token || first === `yof-verify=${token}`)) return "file";
-  }
-  const home = await getText(f, `${origin}/`);
-  if (home.status >= 200 && home.status < 300) {
-    for (const tag of home.body.match(/<meta\b[^>]*>/gi) ?? []) {
-      if (/\bname\s*=\s*["']?yof-verify["'\s/>]/i.test(tag) && new RegExp(`\\bcontent\\s*=\\s*["']?${escapeRe(token)}["'\\s/>]`).test(tag)) return "meta";
-    }
-  }
-  for (const n of [host, ...(host.startsWith("www.") ? [host.slice(4)] : [])]) {
-    const records = await txt(n).catch(() => [] as string[][]);
-    if (records.some((parts) => parts.join("").trim() === `yof-verify=${token}`)) return "dns";
-  }
-  return null;
+type GitHubActor = { login?: string; type?: string } | null;
+export interface DeploymentProof {
+  kind: "preview" | "production";
+  url: string;
+  /** Who wrote the successful status (GitHub sets it). */
+  author: GitHubActor;
+  /** Who created the deployment itself, and the environment name they gave it. */
+  deployer: GitHubActor;
+  environment: string | null;
 }
 
 /**
  * A preview proven by GitHub: a successful deployment status of this repository, for this commit, whose address is
  * the target. Read with the workflow's own GITHUB_TOKEN; nothing is written.
  */
-export async function githubDeploymentProof(host: string, env: Record<string, string | undefined>, f: FetchFn): Promise<{ kind: "preview" | "production"; url: string; author: { login?: string; type?: string } | null } | null> {
+export async function githubDeploymentProof(host: string, env: Record<string, string | undefined>, f: FetchFn): Promise<DeploymentProof | null> {
   const token = env.GITHUB_TOKEN, repo = env.GITHUB_REPOSITORY, sha = env.YOF_HEAD_SHA ?? env.GITHUB_SHA;
   if (!token || !repo || !sha || !/^[\w.-]+\/[\w.-]+$/.test(repo) || !/^[0-9a-f]{7,64}$/.test(sha)) return null;
   const api = (env.GITHUB_API_URL ?? GITHUB_API_DEFAULT).replace(/\/$/, "");
@@ -206,7 +211,8 @@ export async function githubDeploymentProof(host: string, env: Record<string, st
     try { const r = await f(`${api}${p}`, { method: "GET", headers, redirect: "manual", signal: ctl.signal }); return r.ok ? ((await r.json()) as T) : null; }
     catch { return null; } finally { clearTimeout(t); }
   };
-  const deployments = await get<{ id: number; environment?: string; production_environment?: boolean }[]>(`/repos/${repo}/deployments?sha=${sha}&per_page=30`);
+  const actor = (a: GitHubActor | undefined): GitHubActor => (a ? { login: a.login, type: a.type } : null);
+  const deployments = await get<{ id: number; environment?: string; production_environment?: boolean; creator?: GitHubActor }[]>(`/repos/${repo}/deployments?sha=${sha}&per_page=30`);
   for (const d of deployments ?? []) {
     const statuses = await get<{ state?: string; environment_url?: string; target_url?: string; creator?: { login?: string; type?: string } | null }[]>(`/repos/${repo}/deployments/${d.id}/statuses?per_page=10`);
     for (const s of statuses ?? []) {
@@ -217,7 +223,7 @@ export async function githubDeploymentProof(host: string, env: Record<string, st
       try {
         if (new URL(u).hostname.toLowerCase() === host) {
           const production = d.production_environment === true || PRODUCTION_ENV.test(d.environment ?? "");
-          return { kind: production ? "production" : "preview", url: u, author: s.creator ? { login: s.creator.login, type: s.creator.type } : null };
+          return { kind: production ? "production" : "preview", url: u, author: actor(s.creator), deployer: actor(d.creator), environment: d.environment ?? null };
         }
       } catch { /* not an address */ }
     }
@@ -265,8 +271,10 @@ export async function proveTarget(target: string, cfg: AttackConfig, mode: Mode,
   if (dep) {
     // A deployment status names whatever host its repository writes (security audit A5, 11 Nov 2026), so the host must
     // also be this repository's own: a platform preview named after it, or the app's own site with the app proven.
-    const named = previewPlatformMatch(host, env.GITHUB_REPOSITORY ?? "");
     const author = platformAuthor(host, dep.author);
+    // The project name in the environment counts only when the platform's own app wrote the deployment AND its status.
+    const project = author?.own && platformAuthor(host, dep.deployer)?.own ? environmentProject(dep.environment) : null;
+    const named = previewPlatformMatch(host, env.GITHUB_REPOSITORY ?? "", project);
     if (!(named && author?.own)) {
       if (!sameSite(host, appHost)) {
         return {
@@ -276,11 +284,9 @@ export async function proveTarget(target: string, cfg: AttackConfig, mode: Mode,
             : `GitHub reports a deployment at ${host}, but it is not a preview address of this repository and not on ${cfg.app}'s own domain.`,
         };
       }
-      const token = (env.YOF_VERIFY_TOKEN ?? "").trim();
-      if (!/^yof_[A-Za-z0-9_-]{20,64}$/.test(token)) return { ok: false, code: "not_proven", message: `${host} is on ${cfg.app}'s domain: set YOF_VERIFY_TOKEN so yof can prove ${cfg.app} is yours first.` };
-      if (!(await tokenProof(`https://${appHost}`, appHost, token, f, deps.resolveTxt ?? dnsResolveTxt))) {
-        return { ok: false, code: "not_proven", message: `yof found no proof on ${appHost}: no yof-verify file, meta tag or DNS record with your token.` };
-      }
+      // On the app's own domain: the app must be proven for the account running this (account.ts). Fail closed.
+      const mine = await askYofProven(appHost, env, f);
+      if (!mine.ok) return { ok: false, code: "not_proven", message: host === appHost ? mine.message : `${host} is on ${cfg.app}'s domain, so ${cfg.app} must be yours first. ${mine.message}` };
     }
     // The production switch and window are never skipped: production by GitHub's flag, by name, or the app itself.
     kind = dep.kind === "production" || isAppHost ? "production" : "preview";
@@ -290,10 +296,11 @@ export async function proveTarget(target: string, cfg: AttackConfig, mode: Mode,
     if (!isAppHost) {
       return { ok: false, code: "not_this_app", message: `${host} is not ${cfg.app}, the app named in the config, and GitHub reports no deployment of this repository there.` };
     }
-    const token = (env.YOF_VERIFY_TOKEN ?? "").trim();
-    if (!/^yof_[A-Za-z0-9_-]{20,64}$/.test(token)) return { ok: false, code: "not_proven", message: "Set YOF_VERIFY_TOKEN to the proof token from your yof app, or run on a pull request with a GitHub deployment." };
-    method = await tokenProof(origin, host, token, f, deps.resolveTxt ?? dnsResolveTxt);
-    if (!method) return { ok: false, code: "not_proven", message: `yof found no proof on ${host}: no yof-verify file, meta tag or DNS record with your token.` };
+    // A live host is tested only when yof says it is proven for the account running this (account.ts). A proof token
+    // found on the site is public and proves nothing about who is asking, so it is not read. Fail closed.
+    const mine = await askYofProven(host, env, f);
+    if (!mine.ok) return { ok: false, code: "not_proven", message: mine.message };
+    method = mine.method;
     kind = "production";
   }
 

@@ -3,10 +3,23 @@
  * name in the config, and records each finding together with the exact steps that proved it.
  *
  *   auth     each signed-in route, without a sign-in (and with a broken token): the same data back = attack.auth_bypass
- *   rbac     each admin route as a normal member: the admin answer back = attack.rbac_escalation. With a "viewer"
- *            account (a member who may only read, in account A's tenant): each admin route as the viewer, and, in a
- *            full run, the viewer tries to create a test record, to change one of account A's and to delete one of
- *            account A's = attack.viewer_escalation. Only the run's own test records are touched, and deleted.
+ *   rbac     each admin route as a normal member = attack.rbac_escalation. A FINDING needs one of two proofs, and the
+ *            finding says which (meta.proof):
+ *              "marker"  the differential's rule (./engage/differential.ts): a marker the admin account planted in
+ *                        its own test record, seen by the member, plus both controls (the admin sees it; a path that
+ *                        does not exist is refused in a different way);
+ *              "identifying data on a declared admin route"  where no marker can be planted (a list of users or
+ *                        accounts): the route is one YOUR config declares admin-only, the member's answer is a
+ *                        success that carries identifying values (ids, emails, names) of accounts other than the
+ *                        member's own, the admin's answer carries the same values, a signed-out request to the same
+ *                        route is refused in a recognisably different way, and it shows again on a fresh session.
+ *            Anything short of that ("the same data" made of values any two accounts share, an app that answers 200
+ *            to everyone, a member who sees only its own record) is listed under "needs validation", never a finding.
+ *            In a full run with an admin account and an object in the config, the admin account creates one test
+ *            record for this, and it is deleted at the end. With a "viewer" account (a member who may only read, in
+ *            account A's tenant): each admin route as the viewer under the same rule, and, in a full run, the viewer
+ *            tries to create a test record, to change one of account A's and to delete one of account A's
+ *            = attack.viewer_escalation. Only the run's own test records are touched, and deleted.
  *   tenant   account A creates a test record; account B reads it by id (attack.tenant_read), lists it, and changes it
  *            (attack.tenant_write, seen when A reads the change). The record is deleted at the end, always.
  *   ai       the app's own assistant: hidden-instruction extraction, a typed injection, an injection hidden in a record
@@ -21,14 +34,21 @@
  * CONFIRMED only: every finding is reproduced a second time before it is reported. What did not reproduce is counted
  * in the notes, never reported as a finding.
  *
- * A light run (production at night) is read-only: auth, rbac and the read-only surface checks; nothing is created
- * and no message is sent to the assistant.
+ * A light run is read-only, and that is enforced in the HTTP client (readOnly): only GET and HEAD are sent. Auth, rbac
+ * and the read-only surface checks run; nothing is created, no message is sent to the assistant, and NO account is
+ * signed in. A sign-in is a POST with a real password that makes a session on the app, so it is not "read-only"
+ * (security audit A5b, 11 Nov 2026: a light run used to send it while the README said read-only). An account that
+ * signs in with a password is therefore left out of a light run, with a note that says so; an account given as a
+ * header (a token or a session cookie in a YOF_ATTACK_ variable) is used as before. A sign-in belongs to a full run,
+ * which the person chooses knowingly.
  */
 import { randomBytes } from "node:crypto";
-import { maskAll } from "../secrets";
 import { ATTACK_GROUPS, ATTACK_RULE_BY_ID, type AttackGroup, type AttackSeverity } from "./catalog";
 import { ENV_PREFIX, fill, isLoginAccount, ROLES, type AccountSpec, type AiSpec, type AttackConfig, type Budget, type ObjectSpec, type Role } from "./config";
+import { DIFFERENTIAL_REASON_WORDS, decideDifferential, refusedDifferently, type Leg } from "./engage/differential";
+import { markerText, newRunNonce } from "./engage/markers";
 import { AttackClient, BudgetError, RefusedError, StoppedError, type As, type Exchange, type FetchFn, type HttpAnswer, type Method } from "./http";
+import { answerShape, maskEvidence } from "./mask";
 import {
   BURST_MESSAGE, BURST_PARALLEL, BURST_SIZE, CARRIERS, LONG_OUTPUT_PROBE, UNBOUNDED_CHARS, aiProbes, aiProbesY11, burstLimited, carrierDocument,
   claimsOutwardAction, crossTenantQuestion, indirectQuestion, internalDetails, looksLikeInstructions, privilegeQuestion, ragQuestion, readPath,
@@ -64,8 +84,12 @@ export type GroupStatus = "done" | "partial" | "skipped" | "not_run";
 export type StopReason = "requests" | "time" | "cancelled";
 /** After a stop signal, clean-up gets at most this long before the run gives up and lists what is left. */
 export const STOP_CLEANUP_MS = 10_000;
+/** A result that needs a person's look: something was seen, but not enough to call it a finding. Never counted. */
+export interface AttackReview { ruleId: string; method: Method; route: string; as: As; status: number; reason: string }
 export interface AttackRunResult {
   findings: AttackFinding[];
+  /** "Needs validation": seen, not proven. Not findings, not uploaded, and they never fail a run. */
+  review: AttackReview[];
   groups: Record<AttackGroup, GroupStatus>;
   notes: string[];
   stopped: null | StopReason;
@@ -94,38 +118,8 @@ export interface RunOptions {
   signal?: AbortSignal;
 }
 
-const EMAIL_G = /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g;
-const maskEmail = (e: string) => { const [u, d] = e.split("@"); return `${(u ?? "").slice(0, 1)}•••@${d ?? ""}`; };
-/** A phone number or another long run of digits (a card, an account number): only its last two digits are kept. */
-const DIGITS_G = /\+?\d[\d\s().-]{6,}\d/g;
-const maskDigits = (d: string) => `•••${d.replace(/\D/g, "").slice(-2)}`;
-/** Evidence as it may be shown or stored: keys, emails and long numbers masked, whitespace folded, 200 characters at most. */
-export const maskEvidence = (s: string) => maskAll(s.replace(EMAIL_G, maskEmail)).replace(DIGITS_G, maskDigits).replace(/\s+/g, " ").trim().slice(0, 200);
-
-/** A field name that is safe to show: a plain identifier. A name, an address or an id used as a key is not shown. */
-const FIELD = /^[A-Za-z_][A-Za-z0-9_-]{0,29}$/;
-/**
- * What an answer looked like, WITHOUT what it said. Evidence used to hold the first 200 characters of the answer, and
- * masking only knows keys and email addresses: a name, a phone number or a home address from a real record went into
- * the report, the upload and the yof app (security audit, 11 Nov 2026). Now only the shape is kept: the kind of answer,
- * its size and the names of its fields. Never a value. Pure.
- */
-export function answerShape(body: string): string {
-  const size = `${body.length} characters`;
-  let v: unknown;
-  try { v = JSON.parse(body); } catch { return `text, ${size}`; }
-  const fields = (o: object) => {
-    const keys = Object.keys(o);
-    const shown = keys.filter((k) => FIELD.test(k)).slice(0, 8);
-    return `${keys.length} ${keys.length === 1 ? "field" : "fields"}${shown.length ? ` (${shown.join(", ")}${keys.length > shown.length ? ", ..." : ""})` : ""}`;
-  };
-  if (Array.isArray(v)) {
-    const first = v.find((x) => x && typeof x === "object" && !Array.isArray(x)) as object | undefined;
-    return `a JSON list of ${v.length} ${v.length === 1 ? "item" : "items"}${first ? `, the first with ${fields(first)}` : ""}, ${size}`;
-  }
-  if (v && typeof v === "object") return `a JSON object with ${fields(v)}, ${size}`;
-  return `a JSON ${v === null ? "null" : typeof v}, ${size}`;
-}
+// The masking helpers live in ./mask.ts (the engagement evidence uses the same ones); they are exported from here as before.
+export { answerShape, maskEvidence };
 
 const ok = (s: number) => s >= 200 && s < 300;
 const DENIED = /\b(forbidden|unauthori[sz]ed|not allowed|access denied|permission denied|no permission|sign ?in|log ?in|login required)\b/i;
@@ -142,7 +136,11 @@ function leaves(text: string): string[] {
   walk(v);
   return out;
 }
-/** Does `other` carry the same data as `base` (the owner's answer)? Same body, or a shared distinctive value. */
+/**
+ * Does `other` carry the same data as `base` (the owner's answer)? Same body, or a shared distinctive value.
+ * This is a GUESS: it only ever feeds accountData below (the signed-out check). It decides no finding on its own, and
+ * the admin-route comparison no longer uses it (see the rbac group).
+ */
 export function sameData(base: string, other: string): boolean {
   if (!other.trim()) return false;
   if (base.trim() === other.trim()) return true;
@@ -150,15 +148,102 @@ export function sameData(base: string, other: string): boolean {
   const a = new Set(leaves(base));
   return leaves(other).some((x) => a.has(x));
 }
+/**
+ * A field whose value names a person, an account or a record: an id, an email address, a user name, a phone number.
+ * A plan, a status, a role, a flag, a count or a date is not one: any two accounts share those.
+ */
+const IDENTIFYING_KEY = /(?:^|_)(?:id|uuid|guid|sub|email|e_?mail|login|handle|slug|phone|mobile|iban|owner|name|username)$/;
+/** A field name in one spelling: userId, user-id and user_id are all user_id. */
+const fieldName = (k: string) => k.replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/-/g, "_").toLowerCase();
+/** A date, a time or an epoch number: two requests share one by chance, and it says nothing about whose data it is. */
+const TIME_LIKE = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}|$)|^1\d{9}(?:\d{3})?$/;
+const GENERIC = new Set(["true", "false", "null", "none", "undefined", "unknown", "default", "anonymous", "guest", "user", "admin", "member", "n/a"]);
+/** The identifying values of a JSON answer, as "field=value" (the field's own name, wherever it sits). Pure. */
+export function identifying(text: string): Set<string> {
+  const out = new Set<string>();
+  let v: unknown;
+  try { v = JSON.parse(text); } catch { return out; }
+  let seen = 0;
+  const walk = (x: unknown, key: string) => {
+    if (++seen > 5000) return;
+    if (Array.isArray(x)) { for (const y of x) walk(y, key); return; }
+    if (x && typeof x === "object") { for (const k of Object.keys(x)) walk((x as Record<string, unknown>)[k], k); return; }
+    if (!IDENTIFYING_KEY.test(fieldName(key))) return;
+    const s = typeof x === "string" ? x.trim() : typeof x === "number" && Number.isFinite(x) ? String(x) : "";
+    if (s.length > 200 || TIME_LIKE.test(s) || GENERIC.has(s.toLowerCase())) return;
+    // A short number (id 1, id 42) is too easy to share by chance; a string id needs 3 characters.
+    if (typeof x === "number" ? s.replace(/\D/g, "").length < 4 : s.length < 3) return;
+    out.add(`${key.toLowerCase().replace(/[_-]/g, "")}=${s.toLowerCase()}`);
+  };
+  walk(v, "");
+  return out;
+}
+
+/**
+ * Whose data came back to a request that carried no sign-in? (yof audit 4.4, 11 Nov 2026.) sameData above says yes on
+ * ANY shared value, so a public answer that every visitor gets (a product list, a plan name, a status, an empty list)
+ * read as "the signed-in account's data": both hits on the OWASP Juice Shop were false. Three answers:
+ *   "account"  the signed-out answer holds an identifying value of the signed-in account (identifying() above), and
+ *              that value is shown to belong to THIS account: it is the account's own known identity (`identity`, its
+ *              sign-in email), or another account's answer to the same route (`otherAccount`, from a separate
+ *              tenant) does not hold it. Only this is a finding.
+ *   "unclear"  the answers share something, but nothing shows it is this account's: no identifying value in common,
+ *              or one that the other account gets too, or there is no second account to compare with. Reported as
+ *              "needs validation", never as a finding.
+ *   "none"     nothing in common, a refusal, or two answers that hold no value at all (an empty list).
+ * Pure.
+ */
+export type DataMatch = "account" | "unclear" | "none";
+export function accountData(base: string, anon: string, known: { otherAccount?: string | null; identity?: readonly string[] } = {}): DataMatch {
+  if (!sameData(base, anon) || !leaves(base).length) return "none";
+  const mine = identifying(base);
+  const shared = [...identifying(anon)].filter((x) => mine.has(x));
+  if (!shared.length) return "unclear";
+  const valueOf = (pair: string) => pair.slice(pair.indexOf("=") + 1);
+  const ids = new Set((known.identity ?? []).map((s) => s.trim().toLowerCase()).filter((s) => s.length >= 3));
+  if (shared.some((x) => ids.has(valueOf(x)))) return "account";
+  if (typeof known.otherAccount !== "string") return "unclear";
+  const theirs = known.otherAccount.toLowerCase();
+  return shared.some((x) => !theirs.includes(valueOf(x))) ? "account" : "unclear";
+}
+/** The proof an admin-route finding rests on. */
+export type AdminProof = "marker" | "identifying data on a declared admin route";
+export const PROOF_IDENTIFYING: AdminProof = "identifying data on a declared admin route";
+/** A field that names a person by an address or a sign-in name (the member's own email is compared with these). */
+const NAMING_KEY = /(?:email|mail|login|username|handle)$/;
+/**
+ * The identifying values (identifying() above) that BOTH the admin's answer and the other role's answer hold, and that
+ * are shown to be of accounts OTHER than that role's own. Nobody tells the runner which record is the member's, so
+ * "other" is shown in one of two ways and never guessed:
+ *   - one field holds two or more different values (two ids, two email addresses): one account has one of each, so
+ *     at least one belongs to somebody else;
+ *   - the role's own sign-in email is known (`own`) and the answer names a different address or sign-in name.
+ * Values any two accounts share (a plan, a status, a flag, a date, a count) are never identifying. Empty = not shown. Pure.
+ */
+export function othersIdentifying(adminBody: string, body: string, own: readonly string[] = []): string[] {
+  const mine = new Set(own.map((x) => x.trim().toLowerCase()).filter((x) => x.length >= 3));
+  const admin = identifying(adminBody);
+  const valueOf = (pair: string) => pair.slice(pair.indexOf("=") + 1);
+  const keyOf = (pair: string) => pair.slice(0, pair.indexOf("="));
+  const shared = [...identifying(body)].filter((x) => admin.has(x) && !mine.has(valueOf(x)));
+  const perKey = new Map<string, number>();
+  for (const x of shared) perKey.set(keyOf(x), (perKey.get(keyOf(x)) ?? 0) + 1);
+  const several = shared.filter((x) => (perKey.get(keyOf(x)) ?? 0) >= 2);
+  if (several.length) return several;
+  return mine.size ? shared.filter((x) => NAMING_KEY.test(keyOf(x))) : [];
+}
 /** The first distinctive value in `a` that does not appear in `b` ("" when none). */
 export const distinct = (a: string, b: string) => leaves(a).filter((x) => !/^\d+$/.test(x)).find((x) => !b.includes(x)) ?? "";
 
 const withId = (p: string, id: string) => p.split("{id}").join(encodeURIComponent(id));
 
-class Auth {
+/** What a sign-in is sent through: the HTTP client, or the engagement governor around it. */
+export interface LoginSender { send: AttackClient["send"] }
+export class Auth {
   private cache = new Map<Role, Record<string, string> | null>();
   readonly cookieFlags = new Map<Role, string[]>();
-  constructor(private cfg: AttackConfig, private env: Record<string, string | undefined>, private http: AttackClient) {}
+  /** `light`: a read-only run never signs an account in; `skipped` is told the role once. */
+  constructor(private cfg: AttackConfig, private env: Record<string, string | undefined>, private http: LoginSender, private light = false, private skipped: (role: Role) => void = () => {}) {}
   has(role: Role): boolean { return !!this.cfg.accounts[role]; }
   /** An account value from the environment. Only YOF_ATTACK_* names are ever read (audit 3.9), whatever built the config. */
   private read(name: string): string | undefined { return name.startsWith(ENV_PREFIX) ? this.env[name] : undefined; }
@@ -182,6 +267,9 @@ class Auth {
     let h: Record<string, string> | null = null;
     if (acc && !isLoginAccount(acc)) {
       h = staticHeaders();
+    } else if (acc && this.light) {
+      // A light run is read-only: no sign-in request is sent, so this account takes no part (see the file header).
+      this.skipped(role);
     } else if (acc) {
       const email = this.read(acc.emailEnv), pw = this.read(acc.passwordEnv);
       // A sign-in recipe (owner 2026-11-11) runs fresh here, with a one-time code when the account uses one, so a
@@ -217,10 +305,11 @@ export async function runAttack(o: RunOptions): Promise<AttackRunResult> {
     ...cfg.objects.map((x) => x.create.path), ...cfg.ai.map((a) => a.path), ...cfg.ai.flatMap((a) => (a.ingest ? [a.ingest.create.path] : [])),
     ...ROLES.flatMap((r) => { const acc = cfg.accounts[r]; return acc && isLoginAccount(acc) ? [acc.login.path] : []; }),
   ];
-  const http = new AttackClient({ origin: o.proof.origin, budget: o.budget ?? cfg.budget, fetch: o.fetch, now: o.now, sleep: o.sleep, postPaths, signal: o.signal });
-  const auth = new Auth(cfg, env, http);
+  const http = new AttackClient({ origin: o.proof.origin, budget: o.budget ?? cfg.budget, fetch: o.fetch, now: o.now, sleep: o.sleep, postPaths, signal: o.signal, readOnly: mode === "light" });
   const findings: AttackFinding[] = [];
+  const review: AttackReview[] = [];
   const notes: string[] = [];
+  const auth = new Auth(cfg, env, http, mode === "light", (role) => notes.push(`skipped:sign-in:account ${role} signs in with a password, and a light run is read-only, so it sends no sign-in. Give the account as a header (a token or a session cookie in a YOF_ATTACK_ variable) or use --mode full`));
   let unconfirmed = 0;
   const groups = Object.fromEntries(ATTACK_GROUPS.map((g) => [g, "not_run"])) as Record<AttackGroup, GroupStatus>;
   const wanted = new Set(o.groups ?? ATTACK_GROUPS);
@@ -228,6 +317,7 @@ export async function runAttack(o: RunOptions): Promise<AttackRunResult> {
   const accounts = (...roles: Role[]) => Object.fromEntries(roles.map((r) => [r, cfg.accounts[r as "a"]]).filter(([, v]) => v)) as ReplaySpec["accounts"];
   const cleanupList: { as: Role; path: string }[] = [];
   const cleanup: AttackRunResult["cleanup"] = { deleted: 0, left: [] };
+  const runNonce = newRunNonce();
 
   const send = async (as: As, method: Method, path: string, init: { body?: string; purpose?: "read" | "login" | "create" | "ai" | "owned" | "cleanup"; headers?: Record<string, string> } = {}): Promise<HttpAnswer | null> => {
     const h = await auth.headers(as);
@@ -272,14 +362,32 @@ export async function runAttack(o: RunOptions): Promise<AttackRunResult> {
     if (!targets.length) return "skipped" as const;
     const header = (() => { const acc = cfg.accounts[owner]!; return isLoginAccount(acc) ? acc.login.header ?? "Authorization" : acc.headers[0]?.header ?? "Authorization"; })();
     const variants: { label: string; headers?: Record<string, string> }[] = [{ label: "no sign-in" }, ...(header.toLowerCase() === "authorization" ? [{ label: "a broken token", headers: { Authorization: "Bearer undefined" } }] : [])];
+    // Whose data is it? (audit 4.4) The account's own sign-in email when the config knows it, and the answer another
+    // account gets for the same route: B for A (a separate tenant), a plain member for the admin.
+    const identityOf = (role: Role): string[] => { const acc = cfg.accounts[role]; const e = acc && isLoginAccount(acc) && acc.emailEnv.startsWith(ENV_PREFIX) ? env[acc.emailEnv] : undefined; return e ? [e] : []; };
+    const otherOf = (role: Role): Role | null => (role === "a" ? (auth.has("b") ? "b" : null) : auth.has("a") ? "a" : null);
     for (const t of targets) {
       const base = await send(t.owner, "GET", t.p);
       if (!base) { notes.push(`no_account:${t.owner}`); continue; }
       if (!ok(base.status)) { notes.push(`baseline_${base.status}:${t.p}`); continue; }
+      let other: string | null | undefined;   // asked once per route, and only when the signed-out answer shares something
       for (const v of variants) {
         const x = await send("anon", "GET", t.p, { headers: v.headers });
         if (!x || !ok(x.status) || !sameData(base.body, x.body)) continue;
-        if (!(await confirm(async () => { const y = await send("anon", "GET", t.p, { headers: v.headers }); return !!y && ok(y.status) && sameData(base.body, y.body); }))) continue;
+        if (other === undefined) { const role = otherOf(t.owner); const r = role ? await send(role, "GET", t.p) : null; other = r ? r.body : null; }
+        const known = { otherAccount: other, identity: identityOf(t.owner) };
+        const match = accountData(base.body, x.body, known);
+        if (match === "none") continue;
+        if (match === "unclear") {
+          if (!review.some((r) => r.ruleId === "attack.auth_bypass" && r.route === t.p)) {
+            review.push({ ruleId: "attack.auth_bypass", method: "GET", route: t.p, as: "anon", status: x.status,
+              reason: other === null && !known.identity.length
+                ? `GET ${t.p} with ${v.label} answered, and the answer shares values with the signed-in one, but there is no second account in a separate tenant (account B) to show the data belongs to one account. It may be public by design.`
+                : `GET ${t.p} with ${v.label} answered, and the answer shares values with the signed-in one, but none that only this account has (another account gets them too, or they are settings, states or dates). It may be public by design.` });
+          }
+          break;
+        }
+        if (!(await confirm(async () => { const y = await send("anon", "GET", t.p, { headers: v.headers }); return !!y && ok(y.status) && accountData(base.body, y.body, known) === "account"; }))) continue;
         report("attack.auth_bypass", { method: "GET", route: t.p, as: "anon", status: x.status, evidence: `the same data a signed-in account gets came back: ${answerShape(x.body)}`, meta: { request: `GET ${t.p} with ${v.label}`, status: String(x.status) },
           replay: { vars: [], accounts: {}, steps: [{ as: "anon", method: "GET", path: t.p, ...(v.headers ? { headers: v.headers } : {}), expect: { kind: "denied" } }] } });
         break;
@@ -301,18 +409,88 @@ export async function runAttack(o: RunOptions): Promise<AttackRunResult> {
     }
     for (const p of memberPart ? routes : []) {
       if (findings.some((f) => f.ruleId === "attack.auth_bypass" && f.route === p)) continue;
-      const admin = auth.has("admin") ? await send("admin", "GET", p) : null;
-      const m = await send("a", "GET", p);
-      if (!m) { notes.push("no_account:a"); break; }
-      if (!ok(m.status) || (DENIED.test(m.body.slice(0, 2000)) && m.body.length < 2000)) continue;
-      const looksAdmin = admin && ok(admin.status) ? sameData(admin.body, m.body) : leaves(m.body).length > 0;
-      if (!looksAdmin) continue;
-      if (!(await confirm(async () => { const y = await send("a", "GET", p); return !!y && ok(y.status) && (admin && ok(admin.status) ? sameData(admin.body, y.body) : leaves(y.body).length > 0); }))) continue;
-      report("attack.rbac_escalation", { method: "GET", route: p, as: "a", status: m.status, evidence: `a member got the admin answer: ${answerShape(m.body)}`, meta: { request: `GET ${p} as a member`, status: String(m.status) },
-        replay: { vars: [], accounts: accounts("a"), steps: [{ as: "a", method: "GET", path: p, expect: { kind: "denied" } }] } });
+      if ((await adminRoute(p, "a", "attack.rbac_escalation", "a member")) === "no_account") { notes.push("no_account:a"); break; }
     }
     if (viewerPart) await viewerTests(routes, viewerObjs);
     return "done" as const;
+  };
+
+  // ── rbac: an admin route opened by a role that is not an admin ────────────────────────────────
+  /**
+   * The marker of the admin account: one test record the admin creates (a full run, with an admin account and an
+   * object in the config), so an answer that holds it is shown to be the admin's data. Planted once, lazily, and
+   * deleted at the end like every test record. null = no marker (a light run, no admin account, no object).
+   */
+  let adminMarker: string | null | undefined;
+  const plantAdminMarker = async (): Promise<string | null> => {
+    if (adminMarker !== undefined) return adminMarker;
+    adminMarker = null;
+    const spec = cfg.objects[0];
+    if (mode !== "full" || !auth.has("admin") || !spec || !http.roomToCreate) return null;
+    const marker = markerText(runNonce, "admin", 1);
+    if (await create("admin", spec, { marker })) adminMarker = marker;
+    return adminMarker;
+  };
+  const toLeg = (r: HttpAnswer | null): Leg | null => (r ? { status: r.status, body: r.body } : null);
+  /**
+   * One admin route as `role`. The decision is the differential's (./engage/differential.ts decideDifferential):
+   *   proven            the answer holds the admin's planted marker, the admin sees it too (positive control), a path
+   *                     under the route that does not exist is refused in a different way (negative control), and it
+   *                     showed twice. Only this is a finding.
+   *   needs validation  the role got data the admin also gets, but without a planted marker in it (or without a
+   *                     control) nothing shows that the data is for admins only. Listed, never counted.
+   */
+  const adminRoute = async (p: string, role: "a" | "viewer", ruleId: string, who: string): Promise<"no_account" | "done"> => {
+    const first = await send(role, "GET", p);
+    if (!first) return "no_account";
+    if (!ok(first.status)) return "done";
+    const planted = await plantAdminMarker();
+    const admin = auth.has("admin") ? await send("admin", "GET", p) : null;
+    // A marker counts for this route only when the admin's own answer shows it.
+    const marker = planted && admin && ok(admin.status) && admin.body.includes(planted) ? planted : null;
+    const test = marker ? await send(role, "GET", p) : first;
+    const seen = decideDifferential({ marker, positive: toLeg(admin), test: toLeg(test), negative: null, repeat: null });
+    if (!seen.exposed) return "done";
+    const [base, query] = p.split("?");
+    const negative = await send(role, "GET", `${base!.replace(/\/$/, "")}/yof-none-${random()}${query ? `?${query}` : ""}`);
+    const repeat = await send(role, "GET", p);
+    const d = decideDifferential({ marker, positive: toLeg(admin), test: toLeg(test), negative: toLeg(negative), repeat: toLeg(repeat) });
+    const proofOf = (kind: AdminProof) => ({ request: `GET ${p} as ${who}`, status: String(test!.status), proof: kind });
+    // The second proof, where no marker shows on this route: identifying data of other accounts on a route the config
+    // declares admin-only, with a signed-out request refused differently, seen again on a fresh session.
+    if (!(d.outcome === "proven" && marker) && admin && ok(admin.status) && ok(test!.status)) {
+      const acc = cfg.accounts[role];
+      const ownEmail = acc && isLoginAccount(acc) && acc.emailEnv.startsWith(ENV_PREFIX) ? env[acc.emailEnv] : undefined;
+      const own = ownEmail ? [ownEmail] : [];
+      const others = othersIdentifying(admin.body, test!.body, own);
+      if (others.length) {
+        const anon = await send("anon", "GET", p);
+        const usable = !!anon && anon.status !== 0 && anon.status !== 429 && anon.status !== 503;
+        const refused = usable && refusedDifferently(toLeg(anon)!, toLeg(test)!, null) && !othersIdentifying(admin.body, anon!.body, own).length;
+        if (refused) {
+          auth.forget(role);   // a fresh session for a role that signs in; a header account sends its header again
+          const fresh = await send(role, "GET", p);
+          if (!fresh || !ok(fresh.status) || !othersIdentifying(admin.body, fresh.body, own).length) { unconfirmed++; return "done"; }
+          report(ruleId, { method: "GET", route: p, as: role, status: test!.status, evidence: `${who} got the admin answer: ${answerShape(test!.body)}`, meta: proofOf(PROOF_IDENTIFYING),
+            replay: { vars: [], accounts: accounts(role), steps: [{ as: role, method: "GET", path: p, expect: { kind: "denied" } }] } });
+          return "done";
+        }
+      }
+    }
+    if (d.reasons.includes("not_reproduced")) { unconfirmed++; return "done"; }
+    if (d.outcome === "proven" && marker) {
+      const spec = cfg.objects[0]!;
+      report(ruleId, { method: "GET", route: p, as: role, status: test!.status, evidence: `${who} got an answer that holds the admin account's test record: ${answerShape(test!.body)}`, meta: { ...proofOf("marker"), marker: "planted" },
+        replay: { vars: ["marker"], accounts: accounts("admin", role), steps: [
+          { as: "admin", method: "POST", path: spec.create.path, body: spec.create.body, save: { name: "id", from: spec.idPath }, setup: true, leg: "plant" },
+          { as: role, method: "GET", path: p, leg: "test", expect: { kind: "marker_absent", value: "{{marker}}" } },
+          { as: "admin", method: "GET", path: p, leg: "positive", expect: { kind: "marker_present", value: "{{marker}}" } },
+          { as: "admin", method: "DELETE", path: spec.delete.split("{id}").join("{{id}}"), cleanup: true }] } });
+    } else if (d.outcome === "needs_validation" && !review.some((r) => r.ruleId === ruleId && r.route === p)) {
+      review.push({ ruleId, method: "GET", route: p, as: role, status: test!.status,
+        reason: `GET ${p} as ${who} answered${admin && ok(admin.status) ? " with data the admin account also gets" : ""}, but that is not proof yet: ${d.reasons.map((r) => DIFFERENTIAL_REASON_WORDS[r]).join("; ")}. It may be meant for every member.` });
+    }
+    return "done";
   };
 
   // ── rbac: the read-only member (attack.viewer_escalation) ─────────────────────────────────────
@@ -320,16 +498,10 @@ export async function runAttack(o: RunOptions): Promise<AttackRunResult> {
   const viewerTests = async (routes: string[], objs: ObjectSpec[]) => {
     if ((await auth.headers("viewer")) === null) { notes.push("no_account:viewer"); return; }
     for (const p of routes) {
-      // One cause, one finding: a route already open to nobody or to every member is reported there.
+      // One cause, one finding: a route already open to nobody or to every member is reported (or listed) there.
       if (findings.some((f) => (f.ruleId === "attack.auth_bypass" || f.ruleId === "attack.rbac_escalation") && f.route === p)) continue;
-      const admin = auth.has("admin") ? await send("admin", "GET", p) : null;
-      const looksAdmin = (r: HttpAnswer | null) => !!r && ok(r.status) && !(DENIED.test(r.body.slice(0, 2000)) && r.body.length < 2000)
-        && (admin && ok(admin.status) ? sameData(admin.body, r.body) : leaves(r.body).length > 0);
-      const v = await send("viewer", "GET", p);
-      if (!looksAdmin(v)) continue;
-      if (!(await confirm(async () => looksAdmin(await send("viewer", "GET", p))))) continue;
-      report(VIEWER_RULE, { method: "GET", route: p, as: "viewer", status: v!.status, evidence: `a read-only member got the admin answer: ${answerShape(v!.body)}`, meta: { request: `GET ${p} as the read-only member`, status: String(v!.status) },
-        replay: { vars: [], accounts: accounts("viewer"), steps: [{ as: "viewer", method: "GET", path: p, expect: { kind: "denied" } }] } });
+      if (review.some((r) => r.ruleId === "attack.rbac_escalation" && r.route === p)) continue;
+      await adminRoute(p, "viewer", VIEWER_RULE, "a read-only member");
     }
     for (const spec of objs) await viewerObject(spec);
   };
@@ -664,7 +836,8 @@ export async function runAttack(o: RunOptions): Promise<AttackRunResult> {
       }
     }
     // Sign-in: the cookie flags (seen when the runner signed in) and, in a full run with rateLimit on, wrong passwords.
-    for (const role of ["a", "b"] as const) {
+    // A light run signs nobody in, so it has no sign-in cookie to look at.
+    for (const role of mode === "light" ? [] : (["a", "b"] as const)) {
       const acc = cfg.accounts[role];
       if (!acc || !isLoginAccount(acc) || acc.login.tokenPath) continue;
       await auth.headers(role);
@@ -731,5 +904,5 @@ export async function runAttack(o: RunOptions): Promise<AttackRunResult> {
       } catch { notes.push("cleanup_failed"); cleanup.left.push(route); }
     }
   }
-  return { findings, groups, notes, stopped, cleanup, exchanges: http.exchanges, requests: http.used, unconfirmed };
+  return { findings, review, groups, notes, stopped, cleanup, exchanges: http.exchanges, requests: http.used, unconfirmed };
 }

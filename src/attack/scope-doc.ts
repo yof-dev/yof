@@ -48,6 +48,7 @@ export function attackPlan(cfg: AttackConfig, mode: Mode): GroupPlan[] {
     ? skip("rbac", !admin.length ? (has("viewer") ? "the config names no admin routes without {id}, and the read-only member's write tests need a full run and an object" : "the config names no admin routes without {id}") : "no member account to open admin routes with (add account A)")
     : { group: "rbac", runs: true, why: "", does: [
       ...(memberPart ? [`Opens ${count(admin.length, "admin route")} as a normal member${has("admin") ? " and compares the answer with the admin account's" : ""}.`] : []),
+      ...(admin.length && has("admin") && mode === "full" && cfg.objects.length && (memberPart || has("viewer")) ? ["When a member gets an answer, the admin account creates one test record, so that an answer holding it is shown to be admin data. It is deleted at the end. Without it, an open admin route is listed under \"needs validation\"."] : []),
       ...(viewerPart && admin.length ? [`Opens ${count(admin.length, "admin route")} as the read-only member (viewer).`] : []),
       ...(viewerObjects ? [`The read-only member tries to create a test record on ${count(viewerObjects, "object")}${has("a") ? ", and to change and delete a test record of account A" : " (the change and delete tests need account A)"}. Test records are deleted at the end.`] : []),
       ...(has("viewer") && mode === "light" && cfg.objects.length ? ["The read-only member's create, change and delete tests are not run (a light run is read-only)."] : []),
@@ -135,7 +136,7 @@ export function scopeDocument(i: ScopeDocInput): string {
   add("## 2. Hosts in scope", "");
   if (origin) add(`This run is aimed at: ${tick(origin)}. It starts only after yof attack has proven that address as described below.`, "");
   add(
-    `- **The app:** ${tick(cfg.app)} (and ${tick(`www.${cfg.app.replace(/^www\./, "")}`)}). This is production: see section 4. It must be proven with the proof token from the owner's yof app (a file, a meta tag or a DNS record on the host).`,
+    `- **The app:** ${tick(cfg.app)} (and ${tick(`www.${cfg.app.replace(/^www\./, "")}`)}). This is production: see section 4. It must be proven in the owner's yof account (a file, a meta tag or a DNS record on the host, checked by yof): before a run, yof attack asks yof whether it is.`,
     `- **Preview builds of the app's repository:** an address that GitHub reports as a successful deployment of the repository for the commit under test, and that is also the repository's own: a Vercel, Netlify or Cloudflare Pages preview named after the repository and reported by that platform's own GitHub app, or a host on the app's own domain once the app is proven.`,
     "- **The tester's own machine:** `localhost`, `127.0.0.1` and `::1`. Plain http is allowed only there.",
     "",
@@ -150,7 +151,7 @@ export function scopeDocument(i: ScopeDocInput): string {
 
   add("## 4. Mode and production", "");
   add(mode === "light"
-    ? "- **Mode: light.** Read-only checks: no test record is created and no message is sent to the assistant. A test account that signs in with a password still sends its sign-in request."
+    ? "- **Mode: light.** Read-only: only GET and HEAD requests are sent. No test record is created, no message is sent to the assistant and no account is signed in. A test account that signs in with a password takes no part; one given as a header is used."
     : "- **Mode: full.** Reads, sign-in requests, test records the run creates and deletes itself, and test messages to the assistant route named in the config.");
   add(!prod.enabled
     ? "- **Production: off.** The app's live host is not tested. A run aimed at it is refused."

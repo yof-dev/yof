@@ -24,6 +24,8 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { CheckReport, DependencyFinding, KeyFinding } from "./check";
 import { fromFindingsJson, toFindingsJson, yofFingerprint, type CfSeverity, type VfFinding } from "./findings-json";
 import { keyWords } from "./words";
+import type { PatternFinding } from "./patterns";
+import { R2_WORDS } from "./rules2/words-en";
 
 const SEV: Record<string, CfSeverity> = { fix_now: "high", fix_week: "medium", info: "informational" };
 
@@ -55,6 +57,14 @@ function packageToVf(p: DependencyFinding): VfFinding | null {
     trace: [{ kind: "sink" as const, file: p.file, line: 1, scope: rule, description: p.message }],
     evidence: [{ file: p.file, line: 1, description: `${p.file} names ${p.name}${p.version ? ` ${p.version}` : ""}.${p.advisory ? ` Advisory: ${p.advisory}.` : ""}` }],
   };
+  // a scoped name that may be private (0.4.0, the yof app's inside.dep_maybe_private): never confirmed
+  if (p.issue === "made_up" && p.unconfirmed) {
+    return {
+      ...base, verdict: "needs_validation",
+      blockers: [`Whether ${p.name} is a private package installed from another registry, a workspace or a git reference, or a made-up name.`],
+      validationPlan: { local: `Check .npmrc and the lockfile for where ${p.name} is installed from; ask the team whether its scope is private.` },
+    };
+  }
   if (p.issue === "made_up" || p.issue === "vulnerable") {
     return {
       ...base, verdict: "confirmed",
@@ -73,9 +83,39 @@ function packageToVf(p: DependencyFinding): VfFinding | null {
   };
 }
 
+/**
+ * A code or config pattern. A hardening note is not a finding and is not written. A pattern that needs validation
+ * says what yof did not do (run the code, look at the live system); a confirmed one is a setting the file states.
+ */
+function patternToVf(p: PatternFinding): VfFinding | null {
+  if (p.accepted || p.verdict === "note") return null;
+  const sev = SEV[p.severity] ?? "medium";
+  const w = R2_WORDS[p.rule];
+  const facts = Object.entries(p.facts).map(([k, v]) => `${k}: ${v}`).join("; ");
+  const base = {
+    fingerprint: yofFingerprint(p.rule, p.fingerprint), title: `${p.title} in ${p.file}`, description: p.why, rootCause: p.why,
+    trace: [{ kind: "sink" as const, file: p.file, line: p.line, scope: p.rule, description: p.title }],
+    evidence: [{ file: p.file, line: p.line, description: `${facts || p.title}${p.masked ? `. Masked value: ${p.masked}` : ""}` }],
+  };
+  if (p.verdict === "confirmed") {
+    return {
+      ...base, verdict: "confirmed", intendedBehavior: w?.expected ?? "", conditions: [],
+      execution: { attackerPerspective: "Not run: yof read the file.", payloads: [facts || p.title], instructions: [`Open ${p.file} at line ${p.line}.`], observedResult: `The file states it: ${facts || p.title}.` },
+      remediation: { strategy: w?.fix ?? "" },
+      severity: { likelihood: { score: sev, reason: "The setting is in the file as committed." }, impact: { score: sev, reason: p.why }, overall: sev },
+      confidence: { score: "high", reason: "The pattern alone is the defect, and the file states it." },
+    };
+  }
+  return {
+    ...base, verdict: "needs_validation",
+    blockers: ["yof found this pattern in the files. It did not run the code or look at the live system, so it cannot say the value is reachable or real."],
+    validationPlan: { local: `Open ${p.file} at line ${p.line} and follow the value to where it is used. ${w?.expected ? `Expected after a fix: ${w.expected}` : ""}`.trim() },
+  };
+}
+
 /** A yof check run as findings.json (open findings only; accepted risks and public-by-design keys are left out). */
 export function checkToFindingsJson(r: CheckReport): unknown[] {
-  const all = [...r.keys.map(keyToVf), ...r.packages.map(packageToVf)].filter((x): x is VfFinding => !!x);
+  const all = [...r.keys.map(keyToVf), ...r.packages.map(packageToVf), ...(r.patterns ?? []).map(patternToVf)].filter((x): x is VfFinding => !!x);
   return toFindingsJson(all);
 }
 

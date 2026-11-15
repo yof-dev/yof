@@ -42,7 +42,8 @@ const LOCKFILE = /(?:^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|pnpm-lock\.
 const BINARY_EXT = /\.(?:png|jpe?g|gif|webp|avif|ico|bmp|tiff?|psd|pdf|zip|gz|tgz|bz2|xz|7z|rar|jar|war|woff2?|ttf|otf|eot|mp[34]|m4a|wav|ogg|flac|mov|avi|mkv|webm|exe|dll|so|dylib|bin|o|a|class|pyc|wasm|sqlite3?|db)$/i;
 
 export interface SourceFile { path: string; content: string }
-export interface FileSet { files: SourceFile[]; skipped: number; truncated: boolean }
+/** `ignored`: how many paths (files and whole folders) a .yof.yml ignore entry left out; part of `skipped`. */
+export interface FileSet { files: SourceFile[]; skipped: number; truncated: boolean; ignored?: number }
 
 /** True when the bytes look binary (a NUL byte in the first 8 KB). */
 export const looksBinary = (buf: Buffer) => buf.subarray(0, 8000).includes(0);
@@ -59,10 +60,25 @@ function readHead(full: string, size: number): Buffer {
   try { const b = Buffer.alloc(Math.min(size, 8000)); readSync(fd, b, 0, b.length, 0); return b; } finally { closeSync(fd); }
 }
 
-/** Every text file under `root` (relative paths with "/"), minus the skip list, ignore entries and .gitignore. */
-export function walkFiles(root: string, ignore: readonly string[] = [], gitignore: readonly string[] = []): FileSet {
+/** The files git tracks under `root` (relative paths with "/"), or null when this is not a git repository. */
+export function trackedPaths(root: string, git: GitRunner = runGit): Set<string> | null {
+  try { return new Set(git(["ls-files", "-z"], root).toString("utf8").split("\0").filter(Boolean)); } catch { return null; }
+}
+
+/**
+ * Every text file under `root` (relative paths with "/"), minus the skip list, ignore entries and .gitignore.
+ *
+ * `tracked` (yof audit 3.10): the files git tracks. A file that is COMMITTED is scanned even when .gitignore names
+ * it: git ignores only untracked files, so `.env` listed in .gitignore and committed anyway (git add -f, or added
+ * before the rule) is in the repository for everyone who clones it, and used to be skipped here. Without `tracked`
+ * (not a git repository) .gitignore is followed as before.
+ */
+export function walkFiles(root: string, ignore: readonly string[] = [], gitignore: readonly string[] = [], tracked: ReadonlySet<string> | null = null): FileSet {
   const files: SourceFile[] = [];
-  let skipped = 0, truncated = false;
+  let skipped = 0, truncated = false, ignored = 0;
+  const trackedDirs = new Set<string>();
+  for (const p of tracked ?? []) { const parts = p.split("/"); for (let i = 1; i < parts.length; i++) trackedDirs.add(parts.slice(0, i).join("/")); }
+  const byYofYml = (rel: string, dir: boolean) => ignore.some((g) => matchesIgnore(rel, g) || (dir && matchesIgnore(`${rel}/`, g)));
   const visit = (dir: string) => {
     let names: string[];
     try { names = readdirSync(dir).sort(); } catch { return; }
@@ -74,12 +90,16 @@ export function walkFiles(root: string, ignore: readonly string[] = [], gitignor
       try { st = lstatSync(full); } catch { continue; }
       if (st.isSymbolicLink()) continue;
       if (st.isDirectory()) {
-        if (SKIP_DIRS.has(name) || TOOL_COPY_PATH.test(rel) || isLinkedWorktree(full) || ignore.some((g) => matchesIgnore(rel, g) || matchesIgnore(`${rel}/`, g)) || gitignore.some((g) => matchesGitignore(`${rel}/\0`, g))) { skipped++; continue; }
+        if (SKIP_DIRS.has(name) || TOOL_COPY_PATH.test(rel) || isLinkedWorktree(full)) { skipped++; continue; }
+        if (byYofYml(rel, true)) { skipped++; ignored++; continue; }
+        // A folder .gitignore names is still opened when git tracks something inside it.
+        if (!trackedDirs.has(rel) && gitignore.some((g) => matchesGitignore(`${rel}/\0`, g))) { skipped++; continue; }
         visit(full);
         continue;
       }
       if (!st.isFile()) continue;
-      if (shouldSkipPath(rel, ignore, gitignore) || st.size > MAX_FILE_BYTES) { skipped++; continue; }
+      if (byYofYml(rel, false)) { skipped++; ignored++; continue; }
+      if (shouldSkipPath(rel, ignore, tracked?.has(rel) ? [] : gitignore) || st.size > MAX_FILE_BYTES) { skipped++; continue; }
       try {
         if (looksBinary(readHead(full, st.size))) { skipped++; continue; }
         files.push({ path: rel, content: readFileSync(full, "utf8") });
@@ -87,7 +107,7 @@ export function walkFiles(root: string, ignore: readonly string[] = [], gitignor
     }
   };
   visit(root);
-  return { files, skipped, truncated };
+  return { files, skipped, truncated, ignored };
 }
 
 /** Runs git in `cwd`. Throws when git is missing or this is not a repository. */

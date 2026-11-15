@@ -9,12 +9,15 @@
  *   node benchmark/cli.ts combine --run-id <id> --run-url <url> --commit <sha> --yof-version <v> --started <iso>
  *                                 --finished <iso> --runner <label> --out-dir <dir> <target.json>...
  *   node benchmark/cli.ts summary <results.json>
+ *   node benchmark/cli.ts publish <results.json> --api <https://api origin> [--rules-version <v>]
+ *                                 (sends the run to yof.io/benchmark; key from YOF_BENCHMARK_INGEST_KEY, see publish.ts)
  */
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseList } from "./lists.ts";
 import { combine, scoreTarget, type BenchmarkResults, type Reviews, type TargetResult } from "./score.ts";
+import { ingestPayload, sendRun } from "./publish.ts";
 import { envLines, setupJuiceShop, setupNodeGoat, solvedChallenges } from "./setup.ts";
 import { summaryMarkdown } from "./summary.ts";
 import { targetById } from "./targets.ts";
@@ -107,7 +110,15 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
 
-  console.error("Commands: setup, solved, score, combine, summary (see the top of benchmark/cli.ts).");
+  if (cmd === "publish") {
+    const r = json<BenchmarkResults>(pos[0]);
+    if (!r) throw new Error("publish needs a results file.");
+    const out = await sendRun(ingestPayload(r, opt["rules-version"] ?? null), need(opt, "api"), process.env.YOF_BENCHMARK_INGEST_KEY);
+    console.log(out.message);
+    return 0;   // a run that could not be sent still keeps its artifact; the message says why
+  }
+
+  console.error("Commands: setup, solved, score, combine, summary, publish (see the top of benchmark/cli.ts).");
   return 2;
 }
 

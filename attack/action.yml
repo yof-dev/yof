@@ -4,7 +4,8 @@
 # Safe by design:
 #   - pull requests from forks are skipped: they get no secrets, and their code never runs against your accounts;
 #   - the target must be proven: a successful GitHub deployment of THIS repository for the pull request's commit
-#     (Vercel, Netlify and others report one), or your yof proof token on the host;
+#     (Vercel, Netlify and others report one), or your own app, proven for your yof account (the CLI asks yof with
+#     YOF_HOOK_URL or YOF_API_KEY; a proof token copied from a site proves nothing);
 #   - production only when your .yof/attack.json turns it on, and a full run only inside its window;
 #   - a pull-request run attacks only what the change can reach (it says "partial run: N attack groups"), and runs
 #     everything when shared code changes;
@@ -26,7 +27,7 @@ inputs:
     required: false
     default: ".yof/attack.json"
   mode:
-    description: full, or light (read-only).
+    description: full, or light (read-only, GET and HEAD requests only, no account is signed in).
     required: false
     default: "full"
   scoped:
@@ -44,7 +45,7 @@ inputs:
   version:
     description: The @yof/cli version to run.
     required: false
-    default: "0.3.2"
+    default: "0.4.0"
 runs:
   using: composite
   steps:

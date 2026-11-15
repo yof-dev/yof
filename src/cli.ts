@@ -1,5 +1,8 @@
 /** The `yof` command. main() returns the exit code: 0 nothing to fix, 1 something to fix, 2 a usage or setup error. */
 import { AttackError, attackScopeDoc, runAttackCommand } from "./attack/command";
+import {
+  ENGAGE_NOT_AVAILABLE, attackReplay, attackRoeDoc, attackStop, attackVerify, formatReplayText, formatVerifyText, replayExit, stopWatch, verifyExit,
+} from "./attack/engage/command";
 import type { FetchFn } from "./attack/http";
 import { cleanupLines, formatAttackJson, formatAttackText } from "./attack/report";
 import { processSignalHost, STOP_EXIT_CODE, stopOnSignals, type SignalHost } from "./attack/signals";
@@ -22,6 +25,9 @@ Usage
   yof hook install          Run "yof check --staged" before every commit
   yof hook uninstall        Remove that pre-commit hook
   yof attack [url]          Attack your own app with your test accounts (config: .yof/attack.json)
+  yof attack replay <finding.json> [url]   Run a finding's recorded steps again
+  yof attack verify <finding.json> [url]   Try to refute a finding: new sessions, a new marker
+  yof attack stop           Stop a yof attack run that is under way in this folder
   yof diff                  Check only what changed since the last commit (plus new files)
   yof import <file> [path]  Read a findings.json (Cloudflare's security-audit format) and check each
                             record's file and line against a folder (default: the current one)
@@ -29,6 +35,8 @@ Usage
 
 Options
   --offline                 Skip the package-registry lookups (keys only, no network at all)
+  --no-patterns             Leave out the code and config patterns (injection, weak crypto, passwords in
+                            code, containers, Kubernetes, Terraform); they are read offline, never run
   --json                    Print machine-readable JSON
   --format <name>           text | json | findings-json (findings.json, the format of Cloudflare's
                             security-audit skill, with yof's verdicts: confirmed or needs validation)
@@ -36,21 +44,31 @@ Options
 
 yof attack options
   --config <file>           The attack config (default .yof/attack.json)
-  --mode <full|light>       light = read-only (no test records, no messages to your assistant)
+  --mode <full|light>       light = read-only: GET and HEAD only (no sign-in, no test records,
+                            no messages to your assistant)
   --base <branch>           Pull request run: attack only what the change can reach
   --write-tests             Write a regression test for every confirmed finding
   --comment <file>          Write the pull-request comment to this file
   --upload                  Send the masked results to your yof app (YOF_HOOK_URL)
   --scope-doc               Print the scope and rules-of-engagement document for this config
                             (Markdown, to read and sign before a run). Sends nothing.
+  --roe                     Print the rules-of-engagement record a run works under: hosts, kinds of
+                            test, time windows, budgets, forbidden paths (Markdown). Sends nothing.
+  --finding <n>             replay, verify: which finding of a report file (when it holds several)
+  --engage                  Not available yet. It says what exists and sends nothing.
   -v, --version             Print the version
   -h, --help                Print this help
 
 Exit codes: 0 nothing to fix, 1 something to fix, 2 usage or setup error.
-yof attack stopped with Ctrl+C or SIGTERM deletes its test records first, then exits 130 or 143.
+yof attack stopped with Ctrl+C, SIGTERM or "yof attack stop" deletes its test records first, then
+exits 130 or 143. yof attack replay exits 1 while the recorded attack still works. yof attack verify
+exits 1 when the finding stands, 0 when it is refuted, 2 when it cannot be decided. Results of a run
+you start yourself are your own: yof did not see them.
 yof check runs on your machine. Your code is never sent anywhere; its only network calls are
 package-registry lookups (npm, PyPI, OSV), which --offline turns off. yof attack sends requests
-only to the app you proved is yours.
+only to the app you proved is yours. Before it tests a live host it asks yof.io whether that host
+is proven for your account (YOF_HOOK_URL or YOF_API_KEY): only the host name is sent, and without a
+clear yes nothing is tested. A run on localhost needs no account.
 
 yof mcp talks MCP over stdio. Its scans run on your machine and never upload code. With YOF_API_KEY
 (made by "Connect your AI builder" in the yof dashboard) it can also read your yof.io findings and Patch
@@ -84,7 +102,7 @@ export async function main(argv: string[], io: Io = defaultIo()): Promise<number
   const values: Record<string, string> = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    const valued = ["--config", "--mode", "--base", "--comment", "--format"].find((f) => a === f || a.startsWith(`${f}=`));
+    const valued = ["--config", "--mode", "--base", "--comment", "--format", "--finding"].find((f) => a === f || a.startsWith(`${f}=`));
     if (valued) {
       const v = a.includes("=") ? a.slice(a.indexOf("=") + 1) : argv[++i];
       if (!v || v.startsWith("--")) { io.err(`${valued} needs a value.`); return 2; }
@@ -96,7 +114,7 @@ export async function main(argv: string[], io: Io = defaultIo()): Promise<number
     } else if (a.startsWith("-")) flags.add(a);
     else positional.push(a);
   }
-  const known = new Set(["--offline", "--json", "--staged", "--version", "-v", "--help", "-h", "--write-tests", "--upload", "--scope-doc"]);
+  const known = new Set(["--no-patterns", "--offline", "--json", "--staged", "--version", "-v", "--help", "-h", "--write-tests", "--upload", "--scope-doc", "--roe", "--engage"]);
   for (const f of flags) if (!known.has(f)) { io.err(`Unknown option: ${f}\n\n${HELP}`); return 2; }
 
   if (flags.has("--version") || flags.has("-v")) { io.out(VERSION); return 0; }
@@ -118,8 +136,8 @@ export async function main(argv: string[], io: Io = defaultIo()): Promise<number
     if (rest.length > 1) { io.err("yof check takes one path at most."); return 2; }
     try {
       const report = await runCheck({
-        path: rest[0] ?? ".", cwd: io.cwd, staged: flags.has("--staged"), offline: flags.has("--offline"),
-        profile, fetcher: io.fetcher, git: io.git, now: io.now,
+        path: rest[0] ?? ".", cwd: io.cwd, staged: flags.has("--staged"), offline: flags.has("--offline"), patterns: !flags.has("--no-patterns"),
+        profile, fetcher: io.fetcher, git: io.git, now: io.now, env: io.env,
       });
       io.out(format === "findings-json" ? JSON.stringify(checkToFindingsJson(report), null, 2) : format === "json" ? formatJson(report, { version: VERSION }) : formatText(report));
       return report.failed ? 1 : 0;
@@ -130,9 +148,52 @@ export async function main(argv: string[], io: Io = defaultIo()): Promise<number
   }
 
   if (cmd === "attack") {
-    if (rest.length > 1) { io.err("yof attack takes one address at most."); return 2; }
     const mode = values["--mode"] ?? "full";
     if (mode !== "full" && mode !== "light") { io.err("--mode must be full or light."); return 2; }
+    const clock = io.now ? () => io.now!.getTime() : undefined;
+    // `yof attack stop`: ask the runs under way in this folder to stop. Sends nothing.
+    if (rest[0] === "stop") {
+      if (rest.length > 1) { io.err("Usage: yof attack stop"); return 2; }
+      io.out(attackStop({ cwd: io.cwd }));
+      return 0;
+    }
+    // `yof attack --engage`: not built yet. It says so plainly and sends nothing.
+    if (flags.has("--engage")) { io.err(ENGAGE_NOT_AVAILABLE); return 2; }
+    // `yof attack replay|verify <finding.json> [url]`: a stored finding, through the same proof gate and the governor.
+    if (rest[0] === "replay" || rest[0] === "verify") {
+      const sub = rest[0];
+      if (rest.length < 2 || rest.length > 3) { io.err(`Usage: yof attack ${sub} <finding.json> [url]`); return 2; }
+      const pick = values["--finding"] === undefined ? undefined : Number(values["--finding"]);
+      if (pick !== undefined && !(Number.isInteger(pick) && pick >= 1 && pick <= 1000)) { io.err("--finding must be a number, 1 for the first finding."); return 2; }
+      const stop = stopOnSignals(io.signals ?? processSignalHost());
+      try {
+        const opts = { cwd: io.cwd, config: values["--config"], mode, target: rest[2], version: VERSION, env: io.env, fetch: io.http, now: clock, sleep: io.sleep, signal: stop.signal, file: rest[1]!, pick } as const;
+        if (sub === "replay") {
+          const out = await attackReplay(opts);
+          io.out(flags.has("--json") ? JSON.stringify(out, null, 2) : formatReplayText(out));
+          return stop.received() ? STOP_EXIT_CODE[stop.received()!] : replayExit(out);
+        }
+        const out = await attackVerify(opts);
+        io.out(flags.has("--json") ? JSON.stringify(out, null, 2) : formatVerifyText(out));
+        return stop.received() ? STOP_EXIT_CODE[stop.received()!] : verifyExit(out);
+      } catch (e) {
+        if (e instanceof AttackError) { io.err(e.message); return 2; }
+        throw e;
+      } finally {
+        stop.dispose();
+      }
+    }
+    if (rest.length > 1) { io.err("yof attack takes one address at most."); return 2; }
+    if (flags.has("--roe")) {
+      // The record only: the config is read, nothing is sent and no account variable is read.
+      try {
+        io.out(attackRoeDoc({ cwd: io.cwd, config: values["--config"], mode, target: rest[0], version: VERSION, now: clock }));
+        return 0;
+      } catch (e) {
+        if (e instanceof AttackError) { io.err(e.message); return 2; }
+        throw e;
+      }
+    }
     if (flags.has("--scope-doc")) {
       // The document only: the config is read, nothing is sent and no account variable is read.
       try {
@@ -144,15 +205,23 @@ export async function main(argv: string[], io: Io = defaultIo()): Promise<number
       }
     }
     const stop = stopOnSignals(io.signals ?? processSignalHost());
+    // `yof attack stop` in this folder stops this run too: the stop file is looked at once a second.
+    const both = new AbortController();
+    const onSignal = () => both.abort();
+    stop.signal.addEventListener("abort", onSignal, { once: true });
+    const asked = stopWatch(io.cwd);
+    let byFile = false;
+    const poll = setInterval(() => { if (!both.signal.aborted && asked()) { byFile = true; io.err("yof attack: stop asked for (yof attack stop). Deleting the test records this run created."); both.abort(); } }, 1000);
+    poll.unref?.();
     try {
       const out = await runAttackCommand({
         target: rest[0], cwd: io.cwd, config: values["--config"], mode, base: values["--base"], writeTests: flags.has("--write-tests"),
         commentFile: values["--comment"], upload: flags.has("--upload"), version: VERSION, env: io.env, fetch: io.http, git: io.git,
-        now: io.now ? () => io.now!.getTime() : undefined, sleep: io.sleep, signal: stop.signal,
+        now: clock, sleep: io.sleep, signal: both.signal,
       });
       io.out(flags.has("--json") ? formatAttackJson(out.report) : formatAttackText(out.report));
       if (out.uploaded === false) io.err("The results could not be sent to your yof app (check YOF_HOOK_URL).");
-      const sig = stop.received();
+      const sig = stop.received() ?? (byFile ? "SIGINT" as const : null);
       if (sig) {
         const c = out.report.cleanup;
         io.err(c.left.length ? cleanupLines(c).join("\n").trim() : `yof attack: stopped. ${c.deleted ? `Deleted ${c.deleted === 1 ? "the test record" : `all ${c.deleted} test records`} it created.` : "It had created no test records."}`);
@@ -163,6 +232,8 @@ export async function main(argv: string[], io: Io = defaultIo()): Promise<number
       if (e instanceof AttackError) { io.err(e.message); return 2; }
       throw e;
     } finally {
+      clearInterval(poll);
+      stop.signal.removeEventListener("abort", onSignal);
       stop.dispose();
     }
   }

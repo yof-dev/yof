@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: yof-dev/yof@v0.3.2
+      - uses: yof-dev/yof@v0.4.0
         with:
           path: .          # optional, default .
           offline: false   # optional, true = keys only, no registry lookups
@@ -116,7 +116,9 @@ ignore:
 | `balanced` (default) | fix now, fix this week | fix now |
 | `strict` | everything, including public keys that are fine | fix now, fix this week |
 
-`--profile strict` on the command line overrides the file. yof also skips `node_modules`, `.git`, `dist`, `build`, `.next` and similar folders, lock files, binary files, files over 1 MB, and what your root `.gitignore` lists (read simply: plain names, folders and globs; `!` lines are not applied).
+`--profile strict` on the command line overrides the file. yof also skips `node_modules`, `.git`, `dist`, `build`, `.next` and similar folders, lock files, binary files, files over 1 MB, and what your root `.gitignore` lists (read simply: plain names, folders and globs; `!` lines are not applied). A file git tracks is scanned whatever `.gitignore` says, because a committed file is in the repository for everyone who clones it.
+
+**On a pull request in CI** (GitHub Actions), `.yof.yml` and `.yof/accepted.json` are read from the base branch, not from the pull request, so a pull request cannot ignore its own folder, relax the profile or accept its own finding. A change to those files counts once it is merged. The `yof-dev/yof` Action fetches the base branch for this; in your own workflow run `git fetch --no-tags --depth=1 origin "+refs/heads/$GITHUB_BASE_REF:refs/remotes/origin/$GITHUB_BASE_REF"` first. If the base branch cannot be read, no ignore list and no accepted risks are used, and the output says so.
 
 ## Accepted risks: `.yof/accepted.json`
 
@@ -153,7 +155,21 @@ Placeholders such as `sk_live_xxxxxxxx` or `sk_live_your_key_here` are skipped, 
 
 If a registry does not answer, yof says so and claims nothing about that package.
 
-**What it does not do**: it does not read git history, scan your running website, check your database rules, or review code logic. Those live in the yof app and Guard (below).
+**Code and config patterns** (read offline, never run; `--no-patterns` leaves them out):
+
+| Family | What yof looks for |
+| --- | --- |
+| Injection | Request input that reaches a SQL, NoSQL, shell, template, eval, HTML, redirect or server-fetch call in the same function (JavaScript, TypeScript; Python in the simple forms) |
+| CSRF, the code side | A cookie session with state-changing routes and no CSRF check or SameSite setting in the files read; sign-in cookies set without httpOnly or sameSite |
+| Unsafe loaders | node-serialize, unsafe YAML, pickle, marshal, PHP `unserialize`, Ruby `Marshal.load` fed with request input |
+| Weak cryptography | MD5, SHA-1 and unsalted fast hashes for passwords and tokens, `Math.random` for secrets, fixed keys and IVs, ECB mode, TLS checks switched off, JWTs accepted without a signature |
+| Passwords in code | A literal given to a name that says password or secret, default logins, addresses with a password inside |
+| Uploads | A handler that keeps the client's file name or content type, an uploads folder served as pages |
+| Containers and infrastructure | Dockerfile (secrets in ENV or ARG, `curl \| sh`, `ADD` from a URL, an SSH server, end-of-life base images from a dated table), docker-compose, Kubernetes manifests, Terraform for AWS, Google Cloud and Azure |
+
+A pattern is not a proven problem. Each one is printed with its verdict: **confirmed** (the pattern alone is the defect and the file states it, such as ECB mode or a privileged container), **needs validation** (yof found the pattern and did not run the code) or **hardening note** (shown with `--profile strict`). Only a confirmed "fix now" pattern fails a check; with `--profile strict` every pattern that is not a note does. Request input is followed inside one function only. The JavaScript and TypeScript rules need the `typescript` package installed next to yof; without it they do not run and the output says so.
+
+**What it does not do**: it does not read git history, scan your running website, check your database rules, follow a value from one function or file to another, scan built container images or their operating-system packages, or look at a running cluster or cloud account. The first three live in the yof app and Guard (below).
 
 ## Attack your own app: `yof attack`
 
@@ -168,7 +184,7 @@ What it tries:
 
 | Group | What it does |
 | --- | --- |
-| `auth` | Opens each signed-in route with no sign-in and with a broken token |
+| `auth` | Opens each signed-in route with no sign-in and with a broken token. A finding only when the answer holds the signed-in account's own data (an id, an email or a name another account does not get); a public answer is listed as "needs validation", not as a finding |
 | `tenant` | Account A creates a test record, account B reads it by id, finds it in a list and changes it |
 | `rbac` | Opens each admin route as a normal member; with a `viewer` account, also as the read-only member, who then tries to create, change and delete a test record |
 | `ai` | Your own assistant route: asks for its hidden instructions, types a command into a message, hides one in a record it reads (an HTML comment, a link title, a "system" field), asks it for account B's record, to rename account B's record, and for admin data; checks whether account B's record steers account A's general answers (RAG poisoning); asks it to answer with live HTML or a picture link, to drop its rules for one harmless word, for its internal addresses and tool list, and to send an email to a `.invalid` address; and, only with `"limits": true`, sends 10 tiny messages two at a time and asks for one very long story |
@@ -176,9 +192,10 @@ What it tries:
 
 Safe by design, and enforced in the code:
 
-- **Only a host you proved is yours.** `localhost`; a preview that GitHub reports as a successful deployment of this repository for the commit under test, at an address that is also this repository's own (a Vercel, Netlify or Cloudflare Pages preview named after the repository and reported by that platform's own GitHub app, or a host on your app's own domain once the app is proven with your token; on shared hosting such as `github.io` only your own name counts as your domain; an environment named `prod`, `production` or `live`, or your app's own host, is production); or your live host with the proof token from your yof app (`YOF_VERIFY_TOKEN`, the same file, meta tag or DNS record the yof app uses).
+- **Only a host you proved is yours.** `localhost`; a preview that GitHub reports as a successful deployment of this repository for the commit under test, at an address that is also this repository's own (a Vercel, Netlify or Cloudflare Pages preview named after the repository, or after the Vercel project, and reported by that platform's own GitHub app, or a host on your app's own domain once the app is proven for your account; on shared hosting such as `github.io` only your own name counts as your domain; an environment whose name starts with `prod`, `production` or `live`, or your app's own host, is production); or your live host, once yof confirms it is proven for your account.
+- **Proven for your account, not by a copied token.** Before it tests a live host, `yof attack` asks yof whether that host is one of your own proven apps. It asks with `YOF_HOOK_URL` (the upload address from your app's Attack tests page) or `YOF_API_KEY` (from Connect your AI builder), and sends only the host name. The proof token on a site is public, so finding it there says nothing about who is running the test: the CLI no longer reads it, and `YOF_VERIFY_TOKEN` is no longer used. No account, a "no", or yof not reachable: nothing is tested, and the message says how to prove the app. A run on `localhost` and a platform preview reported by the platform's own GitHub app need no account.
 - **Written consent per app**, word for word in the config, naming the app.
-- **Never production** unless the config turns it on for this app. Then a light run (read-only) may go any time, and a full run only inside the window you set.
+- **Never production** unless the config turns it on for this app. Then a light run may go any time, and a full run only inside the window you set. A light run is read-only and the HTTP client enforces it: only GET and HEAD requests are sent. It creates nothing, sends no message to your assistant and signs no account in (a sign-in is a POST with a real password). An account that signs in with a password is left out of a light run, and the run says so; an account given as a header (a token or a session cookie) is used.
 - **No destructive requests.** GET and HEAD, plus POST only to the create, sign-in and assistant routes you name. PATCH, PUT and DELETE only touch records the run created itself, and those are deleted at the end, always.
 - **Hard budgets**: 300 requests and 110 seconds by default (at most 2,000 and 15 minutes), a steady pace, a 10 second timeout. When a budget runs out the run stops and says so, after deleting its test records.
 - **Stop it any time.** Ctrl+C (SIGINT) or SIGTERM, as an editor or CI sends on cancel: nothing new is sent, the test records the run created are deleted (within 10 seconds), it says what it deleted and anything it could not, and exits 130 or 143. A second Ctrl+C quits at once.
@@ -238,6 +255,22 @@ npx @yof/cli attack https://shop.example.com --mode light --scope-doc
 
 Before a run, `--scope-doc` prints a Markdown document made from your config and its consent sentence: the hosts in scope, the test accounts by role (the names of their variables, never a value), the mode and the production window, the budget, which test groups will run and which are skipped and why, what is never done, and a signature block for the owner or a client. It reads the config file only: nothing is sent to any host. It describes automated attack testing, evidence for your security reviews. It does not replace a manual test where a standard requires one.
 
+### The rules a run works under, replaying and verifying a finding, stopping
+
+```sh
+npx @yof/cli attack --roe                                  # the record a run works under (Markdown). Sends nothing.
+npx @yof/cli attack replay finding.json https://preview.example.com
+npx @yof/cli attack verify finding.json https://preview.example.com
+npx @yof/cli attack stop                                   # stop a run that is under way in this folder
+```
+
+- `--roe` prints the rules-of-engagement record made from your config: the hosts, the kinds of test allowed on each, the time windows, the budgets, the paths that are never requested and what is never done. It reads the config file only.
+- `replay` runs a finding's recorded steps again (the `replay` part of a finding from `--json`; `--finding 2` picks one from a whole report). Exit code 1 while the attack still works, 0 once it is refused.
+- `verify` tries to refute a finding. It signs in again, plants a new marker in a new test record and checks six plain rules: the marker only came back from the request itself, a cache gave out the owner's answer, the two accounts share a tenant, the object is public on purpose, the app answers the same for a record that does not exist, it did not show again. Exit code 1 when the finding stands, 0 when it is refuted, 2 when it cannot be decided.
+- `stop` asks a `yof attack` run under way in the same folder to stop: nothing new is sent and its test records are deleted.
+
+Replay and verify go through the same proof of ownership as any run. They measure your app first (20 reads), check it every 25 requests, slow down and then stop when it answers 429 or 503, and stop on server errors, slow answers or a bot wall (reported as "blocked, not tested"). A run you start yourself is your own run: yof did not see it.
+
 ### Regression tests
 
 With `--write-tests`, every confirmed finding becomes a test in your own test framework (Vitest, Jest, Playwright or pytest, detected from your repository; a `node --test` file otherwise). It replays the recorded attack and expects the opposite: the test fails while the attack still works and passes once it is fixed. No AI writes it. It skips itself unless `YOF_ATTACK_TARGET` is set, so your normal test run is unaffected.
@@ -260,7 +293,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: yof-dev/yof/attack@v0.3.2
+      - uses: yof-dev/yof/attack@v0.4.0
         env:
           YOF_ATTACK_A: ${{ secrets.YOF_ATTACK_A }}
           YOF_ATTACK_B: ${{ secrets.YOF_ATTACK_B }}
@@ -278,7 +311,7 @@ Set `YOF_HOOK_URL` (the deploy hook address from your yof app) and `yof attack -
 ```
 yof attack [url]          The address to test (or YOF_ATTACK_TARGET)
 --config <file>           The attack config (default .yof/attack.json)
---mode <full|light>       light = read-only
+--mode <full|light>       light = read-only: GET and HEAD only, no sign-in
 --base <branch>           Pull request run: attack only what the change can reach
 --write-tests             Write a regression test for every confirmed finding
 --comment <file>          Write the pull-request comment to this file

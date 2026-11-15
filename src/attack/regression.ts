@@ -384,6 +384,34 @@ def _yof_replay(spec, env):
                 failures.append(where + " said it acted without asking first")
             if k == "short_answer" and ok(last["status"]) and len(text) >= e["max"]:
                 failures.append(where + " gave an answer of " + str(len(text)) + " characters")
+            if k == "marker_absent":
+                v = sub(e["value"], str)
+                if v and v in text:
+                    failures.append(where + " returned another account's test record")
+            if k == "marker_present":
+                v = sub(e["value"], str)
+                if not v or not ok(last["status"]) or v not in text:
+                    failures.append(where + " did not return the account's own test record (HTTP " + str(last["status"]) + "), so the test shows nothing")
+            if k == "count_at_most":
+                n = len([s for s in statuses if ok(s)])
+                if n > e["max"]:
+                    failures.append(where + " succeeded " + str(n) + " times, at most " + str(e["max"]) + " allowed")
+            if k == "canary_hit":
+                u = env.get("YOF_CANARY_CHECK_URL") or ""
+                if not u:
+                    failures.append(where + " could not be checked: set YOF_CANARY_CHECK_URL")
+                else:
+                    hits = -1
+                    try:
+                        import urllib.request as _req
+                        with _req.urlopen(u + ("&" if "?" in u else "?") + "token=" + urllib.parse.quote(sub(e["token"], str), safe=""), timeout=20) as c:
+                            hits = int(json.loads(c.read().decode("utf-8", "replace")).get("hits"))
+                    except Exception:
+                        hits = -1
+                    if hits < 0:
+                        failures.append(where + " could not be checked: the canary address did not answer")
+                    elif hits > 0:
+                        failures.append(where + " made the app call the canary address")
             if k == "cookie_flags":
                 weak = [c for c in last["cookies"] if not re.search(r";\s*httponly", c, re.I) or not re.search(r";\s*samesite=", c, re.I)
                         or (base.startswith("https:") and not re.search(r";\s*secure", c, re.I))]

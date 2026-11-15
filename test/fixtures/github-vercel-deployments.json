@@ -1,0 +1,136 @@
+{
+  "_about": "The shape of real GitHub deployments written by Vercel's GitHub app, read on 2026-11-11 from public repositories with GitHub's REST API (GET /repos/{owner}/{repo}/deployments and /deployments/{id}/statuses). Field names, the bot's login, type and id, the environment names, the false production flag and the form of the addresses are as observed. The repository, project, team, ids, commits and hashes are made up (acme/shop). Fields this tool does not read (node_id, payload, created_at, ...) are left out.",
+  "sha": "abcdef1234567abcdef1234567abcdef12345678",
+  "deployments": [
+    {
+      "url": "https://api.github.com/repos/acme/shop/deployments/7000000001",
+      "id": 7000000001,
+      "task": "deploy",
+      "original_environment": "Preview – shop-web",
+      "environment": "Preview – shop-web",
+      "description": null,
+      "statuses_url": "https://api.github.com/repos/acme/shop/deployments/7000000001/statuses",
+      "repository_url": "https://api.github.com/repos/acme/shop",
+      "creator": { "login": "vercel[bot]", "id": 35613825, "type": "Bot" },
+      "sha": "abcdef1234567abcdef1234567abcdef12345678",
+      "ref": "abcdef1234567abcdef1234567abcdef12345678",
+      "transient_environment": false,
+      "production_environment": false,
+      "performed_via_github_app": null
+    },
+    {
+      "url": "https://api.github.com/repos/acme/shop/deployments/7000000002",
+      "id": 7000000002,
+      "task": "deploy",
+      "original_environment": "Production – shop-web",
+      "environment": "Production – shop-web",
+      "description": null,
+      "statuses_url": "https://api.github.com/repos/acme/shop/deployments/7000000002/statuses",
+      "repository_url": "https://api.github.com/repos/acme/shop",
+      "creator": { "login": "vercel[bot]", "id": 35613825, "type": "Bot" },
+      "sha": "abcdef1234567abcdef1234567abcdef12345678",
+      "ref": "abcdef1234567abcdef1234567abcdef12345678",
+      "transient_environment": false,
+      "production_environment": false,
+      "performed_via_github_app": null
+    },
+    {
+      "url": "https://api.github.com/repos/acme/shop/deployments/7000000003",
+      "id": 7000000003,
+      "task": "deploy",
+      "original_environment": "Production",
+      "environment": "Production",
+      "description": null,
+      "statuses_url": "https://api.github.com/repos/acme/shop/deployments/7000000003/statuses",
+      "repository_url": "https://api.github.com/repos/acme/shop",
+      "creator": { "login": "vercel[bot]", "id": 35613825, "type": "Bot" },
+      "sha": "abcdef1234567abcdef1234567abcdef12345678",
+      "ref": "abcdef1234567abcdef1234567abcdef12345678",
+      "transient_environment": false,
+      "production_environment": false,
+      "performed_via_github_app": null
+    },
+    {
+      "url": "https://api.github.com/repos/acme/shop/deployments/7000000004",
+      "id": 7000000004,
+      "task": "deploy",
+      "original_environment": "Preview",
+      "environment": "Preview",
+      "description": null,
+      "statuses_url": "https://api.github.com/repos/acme/shop/deployments/7000000004/statuses",
+      "repository_url": "https://api.github.com/repos/acme/shop",
+      "creator": { "login": "vercel[bot]", "id": 35613825, "type": "Bot" },
+      "sha": "abcdef1234567abcdef1234567abcdef12345678",
+      "ref": "abcdef1234567abcdef1234567abcdef12345678",
+      "transient_environment": false,
+      "production_environment": false,
+      "performed_via_github_app": null
+    }
+  ],
+  "statuses": {
+    "7000000001": [
+      {
+        "url": "https://api.github.com/repos/acme/shop/deployments/7000000001/statuses/1",
+        "id": 1,
+        "state": "success",
+        "creator": { "login": "vercel[bot]", "id": 35613825, "type": "Bot" },
+        "description": "Deployment has completed",
+        "environment": "Preview – shop-web",
+        "target_url": "https://shop-web-i15tem3b9-acme-team.vercel.app",
+        "deployment_url": "https://api.github.com/repos/acme/shop/deployments/7000000001",
+        "repository_url": "https://api.github.com/repos/acme/shop",
+        "environment_url": "https://shop-web-i15tem3b9-acme-team.vercel.app",
+        "log_url": "https://shop-web-i15tem3b9-acme-team.vercel.app",
+        "performed_via_github_app": null
+      }
+    ],
+    "7000000002": [
+      {
+        "url": "https://api.github.com/repos/acme/shop/deployments/7000000002/statuses/2",
+        "id": 2,
+        "state": "success",
+        "creator": { "login": "vercel[bot]", "id": 35613825, "type": "Bot" },
+        "description": "Deployment has completed",
+        "environment": "Production – shop-web",
+        "target_url": "https://shop-web-iow64z09y-acme-team.vercel.app",
+        "deployment_url": "https://api.github.com/repos/acme/shop/deployments/7000000002",
+        "repository_url": "https://api.github.com/repos/acme/shop",
+        "environment_url": "https://shop-web-iow64z09y-acme-team.vercel.app",
+        "log_url": "https://shop-web-iow64z09y-acme-team.vercel.app",
+        "performed_via_github_app": null
+      }
+    ],
+    "7000000003": [
+      {
+        "url": "https://api.github.com/repos/acme/shop/deployments/7000000003/statuses/3",
+        "id": 3,
+        "state": "success",
+        "creator": { "login": "vercel[bot]", "id": 35613825, "type": "Bot" },
+        "description": "Deployment has completed",
+        "environment": "Production",
+        "target_url": "https://shop-o8d6my5lh-acme-team.vercel.app",
+        "deployment_url": "https://api.github.com/repos/acme/shop/deployments/7000000003",
+        "repository_url": "https://api.github.com/repos/acme/shop",
+        "environment_url": "https://shop-o8d6my5lh-acme-team.vercel.app",
+        "log_url": "https://shop-o8d6my5lh-acme-team.vercel.app",
+        "performed_via_github_app": null
+      }
+    ],
+    "7000000004": [
+      {
+        "url": "https://api.github.com/repos/acme/shop/deployments/7000000004/statuses/4",
+        "id": 4,
+        "state": "success",
+        "creator": { "login": "vercel[bot]", "id": 35613825, "type": "Bot" },
+        "description": "Deployment has completed",
+        "environment": "Preview",
+        "target_url": "https://shop-qw7ky78bg-acme-team.vercel.app",
+        "deployment_url": "https://api.github.com/repos/acme/shop/deployments/7000000004",
+        "repository_url": "https://api.github.com/repos/acme/shop",
+        "environment_url": "https://shop-qw7ky78bg-acme-team.vercel.app",
+        "log_url": "https://shop-qw7ky78bg-acme-team.vercel.app",
+        "performed_via_github_app": null
+      }
+    ]
+  }
+}

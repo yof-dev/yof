@@ -49,6 +49,8 @@ export interface ClientOptions {
   sleep?: (ms: number) => Promise<void>;
   /** POST routes the config names (create, login, assistant). Anything else is refused. */
   postPaths: readonly string[];
+  /** A light run: only GET and HEAD are ever sent, whatever the caller asks for (no sign-in, no record, no message). */
+  readOnly?: boolean;
   /** Aborted when the person stops the run. */
   signal?: AbortSignal;
 }
@@ -84,8 +86,11 @@ export class AttackClient {
   /** Can one more object be created (its create request plus its later delete)? */
   get roomToCreate(): boolean { return this.left >= 2 && this.timeLeft > 0; }
 
-  /** Mark an id as created by this run: from now on PATCH/PUT/DELETE may touch paths that contain it. */
-  own(id: string): void { if (id && !this.owned.has(id)) { this.owned.add(id); this.reserved++; } }
+  /**
+   * Mark an id as created by this run: from now on PATCH/PUT/DELETE may touch paths that contain it. One request is
+   * held back for its clean-up; `reserve` holds back more (an engagement looks at a record before it deletes it).
+   */
+  own(id: string, reserve = 1): void { if (id && !this.owned.has(id)) { this.owned.add(id); this.reserved += Math.max(1, Math.floor(reserve)); } }
   isOwned(path: string): boolean {
     const parts = pathOnly(path).split("/");
     return [...this.owned].some((id) => parts.includes(encodeURIComponent(id)));
@@ -97,6 +102,7 @@ export class AttackClient {
     const url = new URL(path, this.origin);
     if (url.origin !== this.origin) throw new RefusedError(`Refused: ${url.origin} is not the proven app.`);
     if (method === "GET" || method === "HEAD") return url;
+    if (this.o.readOnly) throw new RefusedError(`Refused: a light run is read-only, so ${method} ${pathOnly(path)} is not sent.`);
     if (method === "POST") {
       if ((purpose === "create" || purpose === "login" || purpose === "ai") && this.o.postPaths.includes(pathOnly(path))) return url;
       throw new RefusedError(`Refused: POST ${pathOnly(path)} is not a route the config allows.`);

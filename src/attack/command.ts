@@ -45,7 +45,7 @@ export interface AttackOutcome { report: AttackReport; tests: GeneratedTest[]; c
 const readIf = (p: string) => { try { return existsSync(p) ? readFileSync(p, "utf8") : null; } catch { return null; } };
 
 /** Read and check the config file; a missing or refused config is an AttackError a person can act on. */
-function loadConfig(cwd: string, config: string | undefined): AttackConfig {
+export function loadConfig(cwd: string, config: string | undefined): AttackConfig {
   const text = readIf(resolve(cwd, config ?? ".yof/attack.json"));
   if (text == null) throw new AttackError(`No attack config at ${config ?? ".yof/attack.json"}. See https://yof.io/docs for the format.`);
   try { return parseAttackConfig(text); } catch (e) { if (e instanceof ConfigError) throw new AttackError(e.message); throw e; }
@@ -109,7 +109,7 @@ export async function runAttackCommand(o: AttackOptions): Promise<AttackOutcome>
     consent: { app: cfg.app, text: cfg.consent }, startedAt: started, finishedAt: finished,
     stopped: res.stopped, cleanup: res.cleanup, requests: res.requests, budget: cfg.budget, groups: res.groups, findings: res.findings,
     tests: tests.map((t) => ({ path: t.path, framework: t.framework, ruleId: t.ruleId })),
-    notes: res.notes, unconfirmed: res.unconfirmed, exchanges: res.exchanges,
+    review: res.review, notes: res.notes, unconfirmed: res.unconfirmed, exchanges: res.exchanges,
     failed: res.findings.some((f) => f.severity !== "nice"),
   };
 

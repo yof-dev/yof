@@ -40,7 +40,13 @@ describe("the runner finds each planted problem, and nothing on the fixed app", 
       expect(ids.has(id), id).toBe(true);
     }
     expect(r.findings.find((f) => f.ruleId === "attack.auth_bypass")!.route).toBe("/api/me");
-    expect(r.findings.find((f) => f.ruleId === "attack.rbac_escalation")!.route).toBe("/api/admin/users");
+    // The admin route open to every member: a user list cannot hold a planted marker, so the proof is the other one:
+    // identifying data of other accounts on a route the config declares admin-only (runner.ts, rbac).
+    const rbac = r.findings.find((f) => f.ruleId === "attack.rbac_escalation")!;
+    expect(rbac.route).toBe("/api/admin/users");
+    expect(rbac.meta.proof).toBe("identifying data on a declared admin route");
+    expect(rbac.evidence).toMatch(/^a member got the admin answer: a JSON object with 1 field \(users\), \d+ characters$/);
+    expect(r.review.filter((v) => v.ruleId === "attack.rbac_escalation")).toEqual([]);
     expect(r.findings.filter((f) => f.ruleId === "attack.tenant_read").map((f) => f.route).sort()).toEqual(["/api/notes", "/api/notes/{id}"]);
     // Evidence is masked: no full email of the fake users is ever kept.
     expect(JSON.stringify(r.findings)).not.toMatch(/alice@example\.com|a-person@example\.com/);
@@ -49,7 +55,6 @@ describe("the runner finds each planted problem, and nothing on the fixed app", 
     expect(kept).not.toMatch(/Alice|Bob|Admin-View|team-plan-gold|user-a\b|example\.com/);
     const ev = (id: string, route?: string) => r.findings.find((f) => f.ruleId === id && (!route || f.route === route))!.evidence;
     expect(ev("attack.auth_bypass")).toMatch(/^the same data a signed-in account gets came back: a JSON object with 3 fields \(id, email, plan\), \d+ characters$/);
-    expect(ev("attack.rbac_escalation")).toMatch(/^a member got the admin answer: a JSON object with 1 field \(users\), \d+ characters$/);
     expect(ev("attack.tenant_read", "/api/notes/{id}")).toMatch(/^the answer held the test record of account A: a JSON object with \d+ fields? \([a-z, ]+\), \d+ characters$/);
     expect(ev("attack.tenant_read", "/api/notes")).toMatch(/^the list held the test record of account A: a JSON /);
     expect(ev("attack.prompt_extraction")).toMatch(/^an answer of \d+ characters that reads like its hidden instructions \(the text is not kept\)$/);
@@ -151,12 +156,80 @@ describe("evidence holds the shape of an answer, never its content", () => {
 
 describe("only proven hosts", () => {
   const cfg = parseAttackConfig(fakeConfig({ app: "shop.example.com", consent: consentText("shop.example.com") }));
-  it("an https host with no proof is refused before any attack request", async () => {
+  // Security audit 3.2 (owner 11 Nov 2026): a live host is proven by the yof ACCOUNT, asked over the API. The proof
+  // token on the site is public, so a copied one must prove nothing: the CLI never reads it.
+  const HOOK = "https://yof.example/api/v1/yof-hook/yofh_0000000000000000000000000000000000000000000";
+  const ASK = `${HOOK}/host-proof`;
+  /** A fetch where yof answers the host-proof question from `proven` (host -> method) and every other address is `rest`. */
+  const yofSays = (proven: Record<string, string>, asked: string[] = [], rest: (u: string) => Promise<Response> = async () => new Response("", { status: 404 })) =>
+    async (u: string, init?: { body?: string }) => {
+      if (u !== ASK) return rest(u);
+      const host = (JSON.parse(init?.body ?? "{}") as { host: string }).host;
+      asked.push(host);
+      return Response.json(proven[host] ? { host, proven: true, code: "proven", method: proven[host] } : { host, proven: false, code: "not_added", method: null });
+    };
+  it("an https host with no account behind the run is refused before any request", async () => {
     const urls: string[] = [];
     const f = async (u: string) => { urls.push(u); return new Response("nothing", { status: 404 }); };
-    const p = await proveTarget("https://shop.example.com", cfg, "full", { fetch: f, env: { YOF_VERIFY_TOKEN: "yof_abcdefghijklmnopqrstuvwxyz" }, resolveTxt: async () => [] });
+    const p = await proveTarget("https://shop.example.com", cfg, "full", { fetch: f, env: {} });
     expect(p).toMatchObject({ ok: false, code: "not_proven" });
-    expect(urls.every((u) => /yof-verify\.txt$|\/$/.test(u))).toBe(true);
+    expect((p as { message: string }).message).toMatch(/Set YOF_HOOK_URL .* or YOF_API_KEY/);
+    expect(urls).toEqual([]);
+  });
+  it("a copied proof token no longer passes: the site's token is never read, only yof's answer for this account counts", async () => {
+    const token = "yof_abcdefghijklmnopqrstuvwxyz";
+    const urls: string[] = [];
+    // The victim's site publishes its token, as every proven site does. The attacker copies it into their own run.
+    const site = async (u: string) => { urls.push(u); return new Response(u.endsWith("yof-verify.txt") ? token : `<meta name="yof-verify" content="${token}">`, { status: 200 }); };
+    const on = parseAttackConfig(fakeConfig({ app: "shop.example.com", consent: consentText("shop.example.com"), production: { enabled: true, window: "00:00-23:59" } }));
+    const alone = await proveTarget("https://shop.example.com", on, "light", { fetch: site, env: { YOF_VERIFY_TOKEN: token } });
+    expect(alone).toMatchObject({ ok: false, code: "not_proven" });
+    // With the attacker's OWN account: yof says the host is not theirs.
+    const asked: string[] = [];
+    const theirs = await proveTarget("https://shop.example.com", on, "light", { fetch: yofSays({}, asked, site), env: { YOF_VERIFY_TOKEN: token, YOF_HOOK_URL: HOOK } });
+    expect(theirs).toMatchObject({ ok: false, code: "not_proven" });
+    expect((theirs as { message: string }).message).toContain("shop.example.com is not proven for your yof account");
+    expect((theirs as { message: string }).message).toContain('press "Check my proof"');
+    expect(asked).toEqual(["shop.example.com"]);
+    expect(urls).toEqual([]);   // the site itself got no request at all
+    // The real owner's account: yes.
+    expect(await proveTarget("https://shop.example.com", on, "light", { fetch: yofSays({ "shop.example.com": "dns" }, [], site), env: { YOF_HOOK_URL: HOOK } })).toMatchObject({ ok: true, kind: "production", method: "dns" });
+  });
+  it("fails closed: yof not reachable, an error, a refused key or an answer that is not a clear yes all refuse", async () => {
+    const on = parseAttackConfig(fakeConfig({ app: "shop.example.com", consent: consentText("shop.example.com"), production: { enabled: true, window: "00:00-23:59" } }));
+    const env = { YOF_HOOK_URL: HOOK };
+    const cases: [string, (u: string) => Promise<Response>, RegExp][] = [
+      ["network error", async () => { throw new Error("getaddrinfo ENOTFOUND"); }, /yof could not be reached, so yof could not confirm .* nothing was tested/],
+      ["503", async () => new Response("{}", { status: 503 }), /yof answered 503/],
+      ["a redirect", async () => new Response("", { status: 302, headers: { Location: "https://elsewhere.example/" } }), /yof answered 302/],
+      ["404", async () => Response.json({ error: "Unknown hook." }, { status: 404 }), /did not accept this run's YOF_HOOK_URL/],
+      ["not JSON", async () => new Response("<html>ok</html>", { status: 200 }), /answer could not be read/],
+      ["yes for another host", async () => Response.json({ host: "other.example.com", proven: true, method: "dns" }), /answer could not be read/],
+      ["yes without a method", async () => Response.json({ host: "shop.example.com", proven: true }), /answer could not be read/],
+      ["proven as a word", async () => Response.json({ host: "shop.example.com", proven: "true", method: "dns" }), /answer could not be read/],
+    ];
+    for (const [name, f, words] of cases) {
+      const p = await proveTarget("https://shop.example.com", on, "light", { fetch: f, env });
+      expect(p, name).toMatchObject({ ok: false, code: "not_proven" });
+      expect((p as { message: string }).message, name).toMatch(words);
+    }
+  });
+  it("asks with the upload address, or with the account key over https only; the key is never sent in the clear", async () => {
+    const on = parseAttackConfig(fakeConfig({ app: "shop.example.com", consent: consentText("shop.example.com"), production: { enabled: true, window: "00:00-23:59" } }));
+    const key = `yof_mcp_${"a".repeat(43)}`;
+    const seen: { url: string; auth?: string; body?: string; redirect?: string }[] = [];
+    const f = async (u: string, init?: { headers?: Record<string, string>; body?: string; redirect?: string }) => {
+      seen.push({ url: u, auth: init?.headers?.Authorization, body: init?.body, redirect: init?.redirect });
+      return Response.json({ host: "shop.example.com", proven: true, code: "proven", method: "file" });
+    };
+    expect(await proveTarget("https://www.shop.example.com", on, "light", { fetch: f, env: { YOF_API_KEY: key } })).toMatchObject({ ok: false });   // www.shop was asked, the answer named shop: not a clear yes
+    expect(seen[0]).toEqual({ url: "https://mcp.yof.io/host-proof", auth: `Bearer ${key}`, body: '{"host":"www.shop.example.com"}', redirect: "manual" });
+    await proveTarget("https://shop.example.com", on, "light", { fetch: f, env: { YOF_API_KEY: key, YOF_MCP_URL: "http://evil.example/mcp" } });
+    expect(seen[1]!.url).toBe("https://mcp.yof.io/host-proof");
+    await proveTarget("https://shop.example.com", on, "light", { fetch: f, env: { YOF_API_KEY: key, YOF_HOOK_URL: HOOK } });
+    expect(seen[2]).toMatchObject({ url: ASK, auth: undefined });
+    expect(await proveTarget("https://shop.example.com", on, "light", { fetch: f, env: { YOF_API_KEY: "yof_mcp_short", YOF_HOOK_URL: "http://plain.example/hook/x" } })).toMatchObject({ ok: false, code: "not_proven" });
+    expect(seen).toHaveLength(3);
   });
   it("another host than the config's app is refused without a request", async () => {
     const urls: string[] = [];
@@ -168,9 +241,7 @@ describe("only proven hosts", () => {
     expect(await proveTarget("http://shop.example.com", cfg, "full", { env: {} })).toMatchObject({ ok: false, code: "not_https" });
   });
   it("a proven production host: off unless enabled; full only inside the window, light any time", async () => {
-    const token = "yof_abcdefghijklmnopqrstuvwxyz";
-    const f = async (u: string) => new Response(u.endsWith("/.well-known/yof-verify.txt") ? token : "", { status: u.endsWith(".txt") ? 200 : 404 });
-    const deps = { fetch: f, env: { YOF_VERIFY_TOKEN: token }, now: new Date("2026-11-02T12:00:00Z") };
+    const deps = { fetch: yofSays({ "shop.example.com": "file" }), env: { YOF_HOOK_URL: HOOK }, now: new Date("2026-11-02T12:00:00Z") };
     expect(await proveTarget("https://shop.example.com", cfg, "light", deps)).toMatchObject({ ok: false, code: "production_off" });
     const on = parseAttackConfig(fakeConfig({ app: "shop.example.com", consent: consentText("shop.example.com"), production: { enabled: true, window: "02:00-04:00" } }));
     expect(await proveTarget("https://shop.example.com", on, "full", deps)).toMatchObject({ ok: false, code: "outside_window" });
@@ -232,17 +303,13 @@ describe("only proven hosts", () => {
     }
     for (const suffix of ["azurewebsites.net", "amazonaws.com", "s3.amazonaws.com", "run.app"]) expect(sameSite(`attacker.${suffix}`, `victim.${suffix}`), suffix).toBe(false);
 
-    // The run itself: the attacker's app is attacker.github.io, proven with their own token; GitHub reports a
+    // The run itself: the attacker's app is attacker.github.io, proven for their own account; GitHub reports a
     // deployment of their repository at victim.github.io. Refused, and the victim's host gets no request.
     const mine = parseAttackConfig(fakeConfig({ app: "attacker.github.io", consent: consentText("attacker.github.io") }));
-    const token = "yof_abcdefghijklmnopqrstuvwxyz";
     const urls: string[] = [];
-    const f = async (u: string) => {
-      urls.push(u);
-      if (u === "https://attacker.github.io/.well-known/yof-verify.txt") return new Response(token, { status: 200 });
-      return deployAt("https://victim.github.io", "Preview", false, { login: "github-actions[bot]", type: "Bot" })(u);
-    };
-    expect(await proveTarget("https://victim.github.io", mine, "full", { fetch: f, env: { ...ghEnv, YOF_VERIFY_TOKEN: token }, resolveTxt: async () => [] })).toMatchObject({ ok: false, code: "not_this_app" });
+    const gh = deployAt("https://victim.github.io", "Preview", false, { login: "github-actions[bot]", type: "Bot" });
+    const f = yofSays({ "attacker.github.io": "file" }, [], async (u) => { urls.push(u); return gh(u); });
+    expect(await proveTarget("https://victim.github.io", mine, "full", { fetch: f, env: { ...ghEnv, YOF_HOOK_URL: HOOK } })).toMatchObject({ ok: false, code: "not_this_app" });
     expect(urls.some((u) => u.includes("victim.github.io"))).toBe(false);
   });
   it("only environment_url counts, not target_url", async () => {
@@ -253,20 +320,30 @@ describe("only proven hosts", () => {
     };
     expect(await proveTarget("https://shop-git-x.vercel.app", cfg, "full", { fetch: f, env: ghEnv })).toMatchObject({ ok: false });
   });
-  it("a host on the app's own domain needs the app proven with the token first", async () => {
+  it("a host on the app's own domain needs the app proven for the account first (a token alone is not enough)", async () => {
     const f = deployAt("https://pr-12.example.com");
-    expect(await proveTarget("https://pr-12.example.com", cfg, "full", { fetch: f, env: ghEnv, resolveTxt: async () => [] })).toMatchObject({ ok: false, code: "not_proven" });
     const token = "yof_abcdefghijklmnopqrstuvwxyz";
-    const proven = async (u: string) => (u === "https://shop.example.com/.well-known/yof-verify.txt" ? new Response(token, { status: 200 }) : f(u));
-    expect(await proveTarget("https://pr-12.example.com", cfg, "full", { fetch: proven, env: { ...ghEnv, YOF_VERIFY_TOKEN: token }, resolveTxt: async () => [] })).toMatchObject({ ok: true, kind: "preview", method: "github-deployment" });
+    const withToken = async (u: string) => (u === "https://shop.example.com/.well-known/yof-verify.txt" ? new Response(token, { status: 200 }) : f(u));
+    const refused = await proveTarget("https://pr-12.example.com", cfg, "full", { fetch: withToken, env: { ...ghEnv, YOF_VERIFY_TOKEN: token } });
+    expect(refused).toMatchObject({ ok: false, code: "not_proven" });
+    expect((refused as { message: string }).message).toContain("pr-12.example.com is on shop.example.com's domain");
+    const asked: string[] = [];
+    expect(await proveTarget("https://pr-12.example.com", cfg, "full", { fetch: yofSays({}, asked, f), env: { ...ghEnv, YOF_HOOK_URL: HOOK } })).toMatchObject({ ok: false, code: "not_proven" });
+    expect(await proveTarget("https://pr-12.example.com", cfg, "full", { fetch: yofSays({ "shop.example.com": "meta" }, asked, f), env: { ...ghEnv, YOF_HOOK_URL: HOOK } })).toMatchObject({ ok: true, kind: "preview", method: "github-deployment" });
+    expect(asked).toEqual(["shop.example.com", "shop.example.com"]);   // the app is asked about, not the preview host
   });
   it("an environment named prod or live, or the app's own host, is production: the switch and window apply", async () => {
     expect(await proveTarget("https://shop.vercel.app", cfg, "full", { fetch: deployAt("https://shop.vercel.app", "prod"), env: ghEnv })).toMatchObject({ ok: false, code: "production_off" });
     expect(await proveTarget("https://shop.vercel.app", cfg, "full", { fetch: deployAt("https://shop.vercel.app", "live"), env: ghEnv })).toMatchObject({ ok: false, code: "production_off" });
-    const token = "yof_abcdefghijklmnopqrstuvwxyz";
-    const f = deployAt("https://shop.example.com", "Preview");
-    const proven = async (u: string) => (u === "https://shop.example.com/.well-known/yof-verify.txt" ? new Response(token, { status: 200 }) : f(u));
-    expect(await proveTarget("https://shop.example.com", cfg, "full", { fetch: proven, env: { ...ghEnv, YOF_VERIFY_TOKEN: token }, resolveTxt: async () => [] })).toMatchObject({ ok: false, code: "production_off" });
+    const f = yofSays({ "shop.example.com": "file" }, [], deployAt("https://shop.example.com", "Preview"));
+    expect(await proveTarget("https://shop.example.com", cfg, "full", { fetch: f, env: { ...ghEnv, YOF_HOOK_URL: HOOK } })).toMatchObject({ ok: false, code: "production_off" });
+  });
+  it("a platform preview written by the platform's own app, and a run on localhost, need no account and no yof", async () => {
+    const urls: string[] = [];
+    const gh = deployAt("https://shop-git-fix.vercel.app");
+    expect(await proveTarget("https://shop-git-fix.vercel.app", cfg, "full", { fetch: async (u) => { urls.push(u); return gh(u); }, env: ghEnv })).toMatchObject({ ok: true, kind: "preview" });
+    expect(await proveTarget("http://localhost:3000", cfg, "full", { fetch: async (u) => { urls.push(u); return new Response("", { status: 500 }); }, env: {} })).toMatchObject({ ok: true, kind: "local" });
+    expect(urls.every((u) => u.startsWith("https://api.github.com/"))).toBe(true);
   });
   it("the token never goes to a plain-http GitHub API", async () => {
     const urls: string[] = [];

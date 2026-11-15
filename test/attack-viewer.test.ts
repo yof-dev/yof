@@ -51,7 +51,8 @@ describe("the read-only member (attack.viewer_escalation)", () => {
       expect(f.replay.accounts.viewer).toEqual({ headers: [{ header: "Authorization", env: "YOF_ATTACK_VIEWER" }] });
     }
     // the admin route is open to every member there: reported once, under the member rule
-    expect(res.findings.filter((f) => f.route === "/api/admin/users").map((f) => f.ruleId)).toEqual(["attack.rbac_escalation"]);
+    expect(res.findings.filter((f) => f.route === "/api/admin/users").map((f) => [f.ruleId, f.meta.proof])).toEqual([["attack.rbac_escalation", "identifying data on a declared admin route"]]);
+    expect(res.review).toEqual([]);
     // confirmed twice: two creates by the viewer, two deletes by the viewer
     expect(res.unconfirmed).toBe(0);
     expect(requests.filter((r) => r.method === "DELETE").length).toBeGreaterThanOrEqual(2);
@@ -75,8 +76,10 @@ describe("the read-only member (attack.viewer_escalation)", () => {
     const res = await runAttack({ cfg, proof, mode: "light", env: fakeEnv(), sleep: noSleep, groups: ["rbac"], fetch: leaky as never });
     expect(res.findings.map((f) => [f.ruleId, f.method, f.route, f.as])).toEqual([[RULE, "GET", "/api/admin/users", "viewer"]]);
     expect(res.findings[0]!.evidence).toMatch(/^a read-only member got the admin answer: a JSON object with 1 field \(users\), \d+ characters$/);
+    expect(res.findings[0]!.meta.proof).toBe("identifying data on a declared admin route");
     expect(JSON.stringify(res.findings)).not.toMatch(/Alice|example\.com/);
     expect(res.findings[0]!.replay.steps).toEqual([{ as: "viewer", method: "GET", path: "/api/admin/users", expect: { kind: "denied" } }]);
+    expect(res.review).toEqual([]);
   });
 
   it("fixed app: nothing found, nothing left behind", async () => {
@@ -101,11 +104,17 @@ describe("the read-only member (attack.viewer_escalation)", () => {
     const before = bad.requests.length;
     const r = await runAttack({ cfg: cfgNo, proof, mode: "full", env: fakeEnv(), sleep: noSleep, groups: ["rbac"] });
     expect(r.findings.map((f) => f.ruleId)).toEqual(["attack.rbac_escalation"]);
-    expect(bad.requests.slice(before).every((x) => x.method === "GET")).toBe(true);
+    expect(r.review).toEqual([]);
+    // the admin account created its one test record (the marker) and the run deleted it again; nothing else was written
+    expect(bad.requests.slice(before).filter((x) => x.method !== "GET").map((x) => `${x.method} ${x.path.replace(/n\d+$/, "{id}")}`)).toEqual(["POST /api/notes", "DELETE /api/notes/{id}"]);
+    expect(bad.notes.size).toBe(0);
 
     const only = await attack(bad, "full", { accounts: { viewer: VIEWER_ACCOUNTS.viewer } });
     expect(only.res.groups.rbac).toBe("done");
-    expect(only.res.findings.map((f) => `${f.ruleId} ${f.method} ${f.route}`).sort()).toEqual([`${RULE} GET /api/admin/users`, `${RULE} POST /api/notes`]);
+    expect(only.res.findings.map((f) => `${f.ruleId} ${f.method} ${f.route}`).sort()).toEqual([`${RULE} POST /api/notes`]);
+    // with no admin account there is nothing to compare the viewer's answer with: listed, with the reason
+    expect(only.res.review.map((v) => `${v.ruleId} ${v.method} ${v.route}`)).toEqual([`${RULE} GET /api/admin/users`]);
+    expect(only.res.review[0]!.reason).toContain("the owner's own request got no answer to compare with");
     expect(only.res.notes).toContain("viewer_needs_account_a:the change and delete tests need a record of account A");
     expect(bad.notes.size).toBe(0);
     // the viewer's token is not set: said in the notes, nothing sent as the viewer

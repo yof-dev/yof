@@ -15,7 +15,11 @@
 import { POPULAR_NPM, POPULAR_PYPI } from "./popular-packages";
 
 export type Ecosystem = "npm" | "pypi";
-export interface Dependency { name: string; ecosystem: Ecosystem; /** As written in the manifest (a range or a pin). */ spec?: string }
+export interface Dependency {
+  name: string; ecosystem: Ecosystem; /** As written in the manifest (a range or a pin). */ spec?: string;
+  /** The exact version a lockfile says is installed (today: bun.lock, parseBunLock). OSV is asked about it. */
+  installed?: string;
+}
 export type PackageSeverity = "fix_now" | "fix_week";
 export type PackageIssue = "made_up" | "brand_new" | "lookalike" | "vulnerable";
 
@@ -25,6 +29,12 @@ export interface PackageFinding {
   /** brand_new: when it was first published (ISO). */ firstPublished?: string;
   /** vulnerable: the pinned version, the advisory and the first fixed version (when OSV lists one). */
   version?: string; advisory?: string; fixedIn?: string | null;
+  /**
+   * made_up only (0.4.0, the yof app's rule since 11 Nov 2026): the public registry does not know this SCOPED name, and
+   * its scope was not seen to be public, so it may be a private package of yours. Never "fix now"; JSON output gives it
+   * the verdict "needs validation".
+   */
+  unconfirmed?: true;
 }
 export interface PackageCheckResult {
   findings: PackageFinding[];
@@ -34,8 +44,10 @@ export interface PackageCheckResult {
 }
 
 // ── Words (English) ───────────────────────────────────────────────────────────────────────────────────────────────
-const COPY: Record<PackageIssue, string> & { noFix: string; fixedIn: string } = {
+const COPY: Record<PackageIssue, string> & { noFix: string; fixedIn: string; made_up_scoped: string } = {
   made_up: "This package doesn't exist on {registry}. AI assistants sometimes invent package names, and attackers register those names with malware. Check the spelling or remove it.",
+  // the yof app's own words (packages/shared/src/i18n-yof-packages.ts made_up_scoped), so the two say the same thing
+  made_up_scoped: "This package is not on the public {registry} registry, and yof could not confirm that its scope ({scope}) is public. It may be a private package of yours and not a made-up name. Check where it is installed from.",
   brand_new: "This package was published in the last 14 days. Check who made it before you install it.",
   lookalike: "This name is one or two letters away from the popular package {similar}. Make sure you meant this one and not {similar}.",
   vulnerable: "This version has a known security problem ({id}). Update it.",
@@ -46,7 +58,7 @@ const COPY: Record<PackageIssue, string> & { noFix: string; fixedIn: string } = 
 /** The plain-English sentence for one finding. */
 export function packageMessage(f: PackageFinding): string {
   const registry = f.ecosystem === "npm" ? "npm" : "PyPI";
-  let text = COPY[f.issue].replace(/\{registry\}/g, registry).replace(/\{similar\}/g, f.similarTo ?? "").replace(/\{id\}/g, f.advisory ?? "");
+  let text = (f.issue === "made_up" && f.unconfirmed ? COPY.made_up_scoped.replace(/\{scope\}/g, `@${npmScopeOf(f.name) ?? ""}`) : COPY[f.issue]).replace(/\{registry\}/g, registry).replace(/\{similar\}/g, f.similarTo ?? "").replace(/\{id\}/g, f.advisory ?? "");
   if (f.issue === "vulnerable") text += ` ${f.fixedIn ? COPY.fixedIn.replace("{fixed}", f.fixedIn) : COPY.noFix}`;
   return text;
 }
@@ -170,6 +182,64 @@ export function parseManifest(path: string, text: string): Dependency[] {
   return [];
 }
 
+/**
+ * npm names that must never be asked of the public registry (the yof app's rule, packages/api/src/lib/yof/inside/
+ * registry.ts directDependencies): names the repository's own package.json files publish, names under a scope that
+ * .npmrc points at its own registry, and every name when .npmrc sets another default registry. Text only.
+ */
+export function privateNpmNames(files: readonly { path: string; content: string }[]): { skip: (name: string) => boolean } {
+  const own = new Set<string>();
+  const scopes = new Set<string>();
+  let allPrivate = false;
+  for (const f of files) {
+    if (/(?:^|\/)package\.json$/.test(f.path)) { try { const n = (JSON.parse(f.content) as { name?: unknown }).name; if (typeof n === "string") own.add(n.toLowerCase()); } catch { /* not JSON */ } }
+    if (/(?:^|\/)\.npmrc$/.test(f.path)) {
+      for (const m of f.content.matchAll(/^\s*(@[\w.-]+):registry\s*=/gm)) scopes.add(m[1]!.toLowerCase());
+      if (/^\s*registry\s*=\s*(?!https:\/\/registry\.npmjs\.org)/m.test(f.content)) allPrivate = true;
+    }
+  }
+  return { skip: (name) => { const n = name.toLowerCase(); return allPrivate || own.has(n) || (n.startsWith("@") && scopes.has(n.split("/")[0]!)); } };
+}
+
+/** JSON with trailing commas (bun.lock) made plain JSON; commas inside strings are kept. Pure. */
+export function stripJsonTrailingCommas(text: string): string {
+  let out = "", inStr = false, esc = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]!;
+    if (inStr) { out += ch; if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === "\"") inStr = false; continue; }
+    if (ch === "\"") { inStr = true; out += ch; continue; }
+    if (ch === ",") {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j]!)) j++;
+      if (text[j] === "}" || text[j] === "]") continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+/**
+ * bun.lock (bun's TEXT lockfile; 15 Nov 2026): the exact version installed at the top level for each npm name, from
+ * its "packages" entries (["name@version", ...]). A workspace, git, file or link entry has no registry version and is
+ * left out. null = the text could not be read as a bun.lock (never "no packages"). The yof app reads the same format
+ * (packages/api/src/lib/yof/inside/lockfiles.ts bunLock). bun.lockb, the old binary form, cannot be read as text.
+ */
+export function parseBunLock(text: string): Map<string, string> | null {
+  let j: { packages?: Record<string, unknown> };
+  try { j = JSON.parse(stripJsonTrailingCommas(text)); } catch { return null; }
+  if (!j || typeof j.packages !== "object" || !j.packages) return null;
+  const out = new Map<string, string>();
+  for (const [key, e] of Object.entries(j.packages)) {
+    if (key.includes("/") && !(key.startsWith("@") && key.split("/").length === 2)) continue;   // nested: not the top level
+    if (!Array.isArray(e) || typeof e[0] !== "string") continue;
+    const id = e[0] as string;
+    const at = id.lastIndexOf("@");
+    if (at <= 0) continue;
+    const version = id.slice(at + 1);
+    if (/^[0-9][\w.+-]{0,60}$/.test(version)) out.set(id.slice(0, at), version);
+  }
+  return out;
+}
+
 /** An exact pin ("1.2.3", "==1.2.3"), or null: OSV is asked only about versions we KNOW are installed (no false alarms on ranges). */
 export function pinnedVersion(spec: string | undefined, ecosystem: Ecosystem): string | null {
   const s = (spec ?? "").trim();
@@ -224,6 +294,10 @@ const enc = (name: string) => name.startsWith("@") ? `@${encodeURIComponent(name
 const npmUrl = (name: string) => `https://registry.npmjs.org/${enc(name)}`;
 const pypiUrl = (name: string) => `https://pypi.org/pypi/${encodeURIComponent(name)}/json`;
 const downloadsUrl = (name: string) => `https://api.npmjs.org/downloads/point/last-week/${enc(name)}`;
+/** One search on the registry host: the packages published under a scope (the registry's own "scope:" qualifier). */
+const scopeUrl = (scope: string) => `https://registry.npmjs.org/-/v1/search?text=${encodeURIComponent(`scope:${scope}`)}&size=1`;
+/** "@acme/ui" → "acme"; null for a name without a scope. */
+export const npmScopeOf = (name: string): string | null => /^@([a-z0-9][a-z0-9._~-]*)\//.exec(name.toLowerCase())?.[1] ?? null;
 
 interface RegistryFacts { exists: boolean; firstPublished: string | null; releases: number }
 
@@ -276,6 +350,16 @@ export async function checkPackages(deps: Dependency[], opts: PackageCheckOption
   await pool(deps, limit, async (dep) => {
     const r = await get(dep.ecosystem === "npm" ? npmUrl(dep.name) : pypiUrl(dep.name));
     if (r.status === 404) {
+      // A scoped name the public registry does not know: made up only if the scope itself is public (the yof app's rule,
+      // packages/api/src/lib/yof/packages.ts). The answer must name a package of that very scope; no answer, or none,
+      // leaves it unconfirmed, never "fix now".
+      const scope = dep.ecosystem === "npm" ? npmScopeOf(dep.name) : null;
+      if (scope) {
+        const s = await get(scopeUrl(scope));
+        const objects = (s.json as { objects?: { package?: { name?: unknown } }[] } | undefined)?.objects;
+        const scopePublic = s.status === 200 && Array.isArray(objects) && objects.some((o) => typeof o?.package?.name === "string" && o.package.name.toLowerCase().startsWith(`@${scope}/`));
+        if (!scopePublic) { findings.push({ name: dep.name, ecosystem: dep.ecosystem, issue: "made_up", severity: "fix_week", unconfirmed: true }); return; }
+      }
       findings.push({ name: dep.name, ecosystem: dep.ecosystem, issue: "made_up", severity: "fix_now" });
       return;
     }
@@ -300,7 +384,8 @@ export async function checkPackages(deps: Dependency[], opts: PackageCheckOption
   });
 
   // Known vulnerabilities: only exact pins (a range could already resolve to a fixed version), one batch query.
-  const pinned = existing.map(({ dep }) => ({ dep, version: pinnedVersion(dep.spec, dep.ecosystem) })).filter((x): x is { dep: Dependency; version: string } => !!x.version);
+  // (a lockfile's exact installed version counts as a pin: it is what is installed)
+  const pinned = existing.map(({ dep }) => ({ dep, version: dep.installed && /^[0-9][\w.+-]{0,60}$/.test(dep.installed) ? dep.installed : pinnedVersion(dep.spec, dep.ecosystem) })).filter((x): x is { dep: Dependency; version: string } => !!x.version);
   if (pinned.length) {
     const body = JSON.stringify({ queries: pinned.map(({ dep, version }) => ({ package: { name: dep.name, ecosystem: dep.ecosystem === "npm" ? "npm" : "PyPI" }, version })) });
     const r = await get("https://api.osv.dev/v1/querybatch", { method: "POST", body });

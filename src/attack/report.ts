@@ -6,12 +6,12 @@
  * Evidence is masked everywhere; a report never holds a token, a password, a cookie or a full record.
  */
 import { gzipSync } from "node:zlib";
-import { ATTACK_GROUPS, type AttackGroup } from "./catalog";
+import { ATTACK_GROUPS, ATTACK_RULE_BY_ID, type AttackGroup } from "./catalog";
 import type { Budget } from "./config";
 import type { Exchange } from "./http";
 import type { Mode, ProofOk } from "./proof";
 import type { GeneratedTest } from "./regression";
-import type { AttackFinding, GroupStatus, StopReason } from "./runner";
+import type { AttackFinding, AttackReview, GroupStatus, StopReason } from "./runner";
 
 export const COMMENT_MARKER = "<!-- yof-attack -->";
 export const PAYLOAD_PREFIX = "<!-- yof-attack-payload:";
@@ -36,6 +36,8 @@ export interface AttackReport {
   groups: Record<AttackGroup, GroupStatus>;
   findings: AttackFinding[];
   tests: { path: string; framework: string; ruleId: string }[];
+  /** "Needs validation": seen, not proven (runner.ts AttackReview). Never findings; never uploaded. */
+  review?: AttackReview[];
   notes: string[];
   unconfirmed: number;
   exchanges: Exchange[];
@@ -64,12 +66,19 @@ export function formatAttackText(r: AttackReport): string {
   if (r.stopped) out.push(`${stopText(r.stopped)} Groups not reached are marked below.`);
   out.push("", "Groups");
   for (const g of ATTACK_GROUPS) out.push(`  ${g.padEnd(8)} ${r.groups[g].replace("_", " ")}`);
+  // Why something was left out (a group with no account, a sign-in a light run does not send), in the run's own words.
+  const why = [...new Set(r.notes.filter((n) => n.startsWith("skipped:")))].map((n) => n.slice("skipped:".length));
+  if (why.length) { out.push("", "Not tested"); for (const w of why) out.push(`  ${w.replace(":", ": ")}`); }
   if (r.findings.length) {
     out.push("", "Findings");
     for (const f of r.findings) {
       out.push(`  ${f.title}  (${LABEL[f.severity]})`);
       out.push(`    ${f.method} ${f.route} as ${f.as === "anon" ? "nobody signed in" : `account ${f.as}`}: ${f.evidence}`);
     }
+  }
+  if (r.review?.length) {
+    out.push("", "Needs validation (not counted as findings: check these yourself)");
+    for (const v of r.review) out.push(`  ${ATTACK_RULE_BY_ID[v.ruleId]?.title ?? v.ruleId}`, `    ${v.reason}`);
   }
   if (r.tests.length) { out.push("", "Regression tests"); for (const t of r.tests) out.push(`  ${t.path} (${t.framework})`); }
   out.push(...cleanupLines(r.cleanup));
@@ -92,6 +101,10 @@ export function attackComment(r: AttackReport, tests: GeneratedTest[], headSha: 
   else {
     lines.push("| Finding | Where | Urgency |", "| --- | --- | --- |");
     for (const f of r.findings) lines.push(`| ${f.title} | \`${f.method} ${f.route.replace(/`/g, "")}\` as ${f.as === "anon" ? "nobody" : `account ${f.as}`} | ${LABEL[f.severity]} |`);
+  }
+  if (r.review?.length) {
+    lines.push("", `**Needs validation** (${plural(r.review.length, "item")}, not counted as findings):`);
+    for (const v of r.review) lines.push(`- \`${v.method} ${v.route.replace(/`/g, "")}\`: ${v.reason.replace(/`/g, "")}`);
   }
   const headerRuleIds = [...new Set(r.findings.filter((f) => f.ruleId === "attack.missing_headers").flatMap((f) => (f.meta.headers ?? "").split(",").filter(Boolean)))];
   const files = tests.map((t) => ({ path: t.path, content: t.content }));

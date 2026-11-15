@@ -6,8 +6,12 @@ export {
   type Dependency, type Ecosystem, type PackageFinding, type PackageCheckResult, type PackageFetcher, type PackageIssue, type PackageSeverity,
 } from "./packages";
 export { parseYofYml, matchesIgnore, parseGitignore, matchesGitignore, PROFILES, type Profile, type YofConfig } from "./config";
-export { runCheck, visibleIn, failsIn, collapseKeys, primaryOrder, CheckError, type CheckReport, type CheckOptions, type KeyFinding, type DependencyFinding } from "./check";
+export { runCheck, patternVisibleIn, patternFailsIn, visibleIn, failsIn, collapseKeys, primaryOrder, CheckError, type CheckReport, type CheckOptions, type KeyFinding, type DependencyFinding } from "./check";
 export { formatText, formatJson, filePrompts, CLOSING_LINE } from "./format";
+// Code and config patterns (the second rule set, the same bytes the hosted check runs).
+export { patternFindings, patternFixPrompt, loadTypescript, verdictOf, type PatternFinding, type PatternRun, type PatternVerdict, type PatternSeverity } from "./patterns";
+export { runRules2, R2_RULES, R2_RULE_BY_ID, R2_FAMILIES, R2_FAMILY_SCOPE, BASE_IMAGE_TABLE_DATE, type R2Rule, type R2Family, type R2Finding, type Rules2Result } from "./rules2/index";
+export { R2_WORDS } from "./rules2/words-en";
 export { ACCEPTED_FILE, acceptFingerprint, acceptanceFor, parseAccepted, withEntry, withoutEntry, type AcceptedEntry, type Acceptance } from "./accepted";
 export { KEY_WORDS, keyWords, keyFixPrompt, packageFixPrompt, fileFixPrompt, type RuleWords } from "./words";
 export { installHook, uninstallHook, HOOK_SCRIPT, HOOK_MARKER } from "./hook";
@@ -18,8 +22,23 @@ export { parseAttackConfig, inWindow, fill, ConfigError, DEFAULT_BUDGET, MAX_BUD
 export { AttackClient, BudgetError, RefusedError, StoppedError, CLEANUP_MS, USER_AGENT as ATTACK_USER_AGENT, type Exchange, type FetchFn } from "./attack/http";
 export { proveTarget, parseTarget, findPreviewUrl, githubDeploymentProof, type ProofResult, type ProofOk, type TargetKind, type Mode } from "./attack/proof";
 export { aiProbes, looksLikeInstructions, readPath } from "./attack/probes";
-export { runAttack, STOP_CLEANUP_MS, type StopReason, sameData, distinct, maskEvidence, answerShape, REDIRECT_PROBE_HOST, type AttackFinding, type AttackRunResult, type GroupStatus } from "./attack/runner";
+export { runAttack, STOP_CLEANUP_MS, type StopReason, sameData, accountData, identifying, othersIdentifying, PROOF_IDENTIFYING, type AdminProof, type DataMatch, type AttackReview, distinct, maskEvidence, answerShape, REDIRECT_PROBE_HOST, type AttackFinding, type AttackRunResult, type GroupStatus } from "./attack/runner";
 export { REPLAY_ENGINE_JS, type ReplaySpec, type ReplayStep, type Expect } from "./attack/replay";
+// yof engagement, open core: the rules-of-engagement record, the governor, planted markers, the differential, the
+// verifier and the evidence bundle. Everything a run sends goes through these; read them to see exactly what is fired.
+export {
+  parseRoe, roeCheckRequest, roeFromConfig, roeDocument, roePathForbidden, SAFETY_CLASSES, FORBIDDEN_ACTIONS, SEED_FORBIDDEN_PATHS, METHODS_OF_CLASS,
+  type EngageRoe, type EngageRoeHost, type SafetyClass, type ForbiddenAction, type RoeDecision, type PlannedRequest,
+} from "./attack/engage/roe";
+export {
+  Governor, GovernorStopped, RoeRefused, computeBaseline, onAnswer, budgetStop, looksBlocked, errorLimit, latencyLimit, outcomeOfStop, newState,
+  BASELINE_REQUESTS, PROBE_EVERY, ERROR_WINDOW, PAUSE_MS, type Baseline, type GovernorState, type GovernorStop, type GovernorEvent, type Decision,
+} from "./attack/engage/governor";
+export { MarkerRegistry, markerText, parseMarker, findMarkers, newRunNonce, plantMarker, cleanUpMarkers, MARKER_SHAPE, type EngageIo, type EngageSend, type PlantedRecord, type PlantSpec } from "./attack/engage/markers";
+export { decideDifferential, runDifferential, differentialSpec, finalVerdict, refusedDifferently, type DifferentialInput, type DifferentialDecision, type DifferentialOutcome, type DifferentialResult } from "./attack/engage/differential";
+export { verifySpec, decideVerification, specLegs, REFUTATION_RULES, type RefutationRule, type VerifierResult, type VerifierFacts } from "./attack/engage/verifier";
+export { buildEvidenceBundle, bundleHash, bundleIntact, recordingIo, maskKeepingMarkers, type EvidenceBundle, type EvidenceExchange } from "./attack/engage/evidence";
+export { parseReplaySpec, specFromFile, runSpec, type SpecRun } from "./attack/engage/spec";
 export { detectFramework, synthesizeTest, testName, GENERATED_MARK, GENERATED_LINE, PY_ENGINE, type Framework, type GeneratedTest } from "./attack/regression";
 export { blastRadius, routesOf, nextRoute, routeMatches, groupsFor, scopeLabel, type BlastResult } from "./attack/blast";
 export { formatAttackText, formatAttackJson, attackComment, COMMENT_MARKER as ATTACK_COMMENT_MARKER, PAYLOAD_PREFIX as ATTACK_PAYLOAD_PREFIX, type AttackReport, type CommentPayload } from "./attack/report";

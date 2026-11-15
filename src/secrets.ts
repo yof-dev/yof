@@ -9,6 +9,8 @@
  *           GitHub, Slack, Hugging Face, Groq, Replicate, private keys.
  * fix_week  Stripe sk_test_, an AWS key ID on its own, and VITE_ / NEXT_PUBLIC_ style settings named like secrets.
  * info      keys that are meant to be public: the Supabase anon JWT, the Firebase web key, Stripe pk_ keys.
+ * Supabase's newer keys (0.4.0, the same rule as the yof app): sb_secret_... is the service-role key (fix_now) and
+ * sb_publishable_... the browser key (info).
  *
  * MASKING: a match is never returned in full. `masked` keeps the recognisable prefix and four characters; `snippet`
  * is at most 40 characters of context on each side with EVERY secret-looking run in it masked. `hash` is a SHA-256
@@ -53,14 +55,27 @@ export const KEY_RULES: Record<string, { name: string; severity: Severity }> = {
   "secret.aws": { name: "AWS access key with its secret", severity: "fix_now" },
   "secret.aws_key_id": { name: "AWS access key ID", severity: "fix_week" },
   "secret.named_env": { name: "Browser-visible setting named like a secret", severity: "fix_week" },
+  "secret.google_api_key": { name: "Google API key", severity: "fix_week" },
   "public.supabase_anon": { name: "Supabase anon key (public by design)", severity: "info" },
   "public.firebase_web": { name: "Firebase web key (public by design)", severity: "info" },
   "public.stripe_publishable": { name: "Stripe publishable key (public by design)", severity: "info" },
 };
 
+/**
+ * Which rule an AIza key is, from the code within 600 characters of it: the Firebase web key (public by design) when
+ * that code is a Firebase config, otherwise a Google API key of unknown scope (truth batch item 3, 15 Nov 2026). Pure;
+ * the yof app has the same function (packages/api/src/lib/yof/secrets.ts googleKeyRule, a test compares them).
+ */
+export function googleKeyRule(text: string, index: number): "public.firebase_web" | "secret.google_api_key" {
+  const near = text.slice(Math.max(0, index - 600), index + 600);
+  const firebase = /authDomain|messagingSenderId|firebaseConfig|firebaseapp\.com|firebaseio\.com|firebasestorage\.(?:app|googleapis\.com)/i.test(near)
+    || (/\bapiKey\b/.test(near) && /\bprojectId\b/.test(near));
+  return firebase ? "public.firebase_web" : "secret.google_api_key";
+}
+
 const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 32);
 
-const KNOWN_PREFIX = /^(sk_live_|rk_live_|sk_test_|pk_live_|pk_test_|whsec_|sk-ant-[a-z]+\d*-|sk-proj-|sk-svcacct-|sk-admin-|sk-|re_|SG\.|AKIA|ASIA|AIza|eyJ|github_pat_|gh[pousr]_|xox[bpa]-|xapp-|hf_|gsk_|r8_|key-|SK|https:\/\/hooks\.slack\.com\/services\/|-----BEGIN [A-Z ]*PRIVATE KEY-----)/;
+const KNOWN_PREFIX = /^(sb_publishable_|sb_secret_|sk_live_|rk_live_|sk_test_|pk_live_|pk_test_|whsec_|sk-ant-[a-z]+\d*-|sk-proj-|sk-svcacct-|sk-admin-|sk-|re_|SG\.|AKIA|ASIA|AIza|eyJ|github_pat_|gh[pousr]_|xox[bpa]-|xapp-|hf_|gsk_|r8_|key-|SK|https:\/\/hooks\.slack\.com\/services\/|-----BEGIN [A-Z ]*PRIVATE KEY-----)/;
 
 /** "sk_live_51AbCd••••••••" style: a known prefix plus four characters, the rest hidden. */
 export function maskSecret(value: string, prefixLen?: number): string {
@@ -116,6 +131,11 @@ interface Pattern { ruleId: string | ((value: string, text: string, index: numbe
 // re-scanned to its end (quadratic; 30 KB of "eyJeyJ..." took 3.4 s, measured 2026-10-31).
 const JWT = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{10,}/g;
 
+// Supabase's newer keys (the yof app's rule since 11 Nov 2026, packages/api/src/lib/yof/secrets.ts): a fixed prefix, then
+// a run of URL-safe characters. sb_secret_ has the service_role key's full power; sb_publishable_ is the browser key.
+const SB_SECRET = /(?<![A-Za-z0-9_-])sb_secret_[A-Za-z0-9_-]{20,}/g;
+const SB_PUBLISHABLE = /(?<![A-Za-z0-9_-])sb_publishable_[A-Za-z0-9_-]{20,}/g;
+
 const PATTERNS: Pattern[] = [
   {
     re: JWT,
@@ -130,6 +150,9 @@ const PATTERNS: Pattern[] = [
       return null;   // any other JWT (a session, a test token) is not judged here
     },
   },
+  // The newer keys are opaque (no role to decode): the prefix decides; meta.format says which form was seen.
+  { re: SB_SECRET, ruleId: () => ({ ruleId: "secret.supabase_service_role", meta: { format: "sb_secret" } }) },
+  { re: SB_PUBLISHABLE, ruleId: () => ({ ruleId: "public.supabase_anon", meta: { format: "sb_publishable" } }) },
   { re: /\bsk_live_[A-Za-z0-9]{20,}/g, ruleId: "secret.stripe_live" },
   { re: /\brk_live_[A-Za-z0-9]{20,}/g, ruleId: "secret.stripe_restricted" },
   { re: /\bsk_test_[A-Za-z0-9]{20,}/g, ruleId: "secret.stripe_test" },
@@ -162,7 +185,8 @@ const PATTERNS: Pattern[] = [
   { re: /\bre_[A-Za-z0-9]{8,}_[A-Za-z0-9]{16,}\b/g, ruleId: "secret.resend" },
   { re: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/g, ruleId: "secret.sendgrid" },
   { re: /-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----/g, ruleId: "secret.private_key" },
-  { re: /\bAIza[0-9A-Za-z_-]{35}\b/g, ruleId: "public.firebase_web" },
+  // An AIza key can be any Google API key: Firebase's web key only with a Firebase config nearby (googleKeyRule).
+  { re: /\bAIza[0-9A-Za-z_-]{35}\b/g, ruleId: (_v, text, i) => ({ ruleId: googleKeyRule(text, i) }) },
   {
     // A Twilio auth token: 32 hex characters assigned to a name that says so, with an Account SID nearby.
     re: /(?:auth_?token|authtoken|twilio_?token)["'`]?\s*[:=]\s*["'`]([a-f0-9]{32})["'`]/gi, group: 1,
@@ -192,7 +216,7 @@ const PATTERNS: Pattern[] = [
 ];
 
 /** Every secret-looking run, for masking a snippet (broader than the rules on purpose). */
-const MASK_ANY = /((?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{10,}|\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{8,}|\bwhsec_[A-Za-z0-9]{8,}|\bgithub_pat_[A-Za-z0-9_]{12,}|\bgh[pousr]_[A-Za-z0-9]{12,}|\bxox[bpa]-[A-Za-z0-9-]{12,}|\bxapp-[A-Za-z0-9-]{12,}|\bhf_[A-Za-z0-9]{12,}|\bgsk_[A-Za-z0-9]{12,}|\br8_[A-Za-z0-9]{12,}|\bkey-[a-f0-9]{16,}|\bsk-[A-Za-z0-9_-]{16,}|\bre_[A-Za-z0-9_]{12,}|\bSG\.[A-Za-z0-9_.-]{20,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}|\bAIza[0-9A-Za-z_-]{20,}|\b[a-f0-9]{32,}\b|[A-Za-z0-9/+]{40,})/g;
+const MASK_ANY = /((?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{10,}|(?<![A-Za-z0-9_-])sb_(?:secret|publishable)_[A-Za-z0-9_-]{8,}|\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{8,}|\bwhsec_[A-Za-z0-9]{8,}|\bgithub_pat_[A-Za-z0-9_]{12,}|\bgh[pousr]_[A-Za-z0-9]{12,}|\bxox[bpa]-[A-Za-z0-9-]{12,}|\bxapp-[A-Za-z0-9-]{12,}|\bhf_[A-Za-z0-9]{12,}|\bgsk_[A-Za-z0-9]{12,}|\br8_[A-Za-z0-9]{12,}|\bkey-[a-f0-9]{16,}|\bsk-[A-Za-z0-9_-]{16,}|\bre_[A-Za-z0-9_]{12,}|\bSG\.[A-Za-z0-9_.-]{20,}|\b(?:AKIA|ASIA)[0-9A-Z]{16}|\bAIza[0-9A-Za-z_-]{20,}|\b[a-f0-9]{32,}\b|[A-Za-z0-9/+]{40,})/g;
 
 export function maskAll(text: string): string {
   return text.replace(MASK_ANY, (m) => maskSecret(m));

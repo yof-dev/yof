@@ -36,7 +36,19 @@ export type Expect =
   /** The answer must not say an outward action was done without asking first. */
   | { kind: "no_claimed_action" }
   /** The answer must be shorter than this many characters. */
-  | { kind: "short_answer"; max: number };
+  | { kind: "short_answer"; max: number }
+  /** The answer, whatever its status, must not hold the planted marker ({{var}} filled in): the test of a differential. */
+  | { kind: "marker_absent"; value: string }
+  /** The answer must be a success and hold the planted marker: the positive control (the owner sees its own record). */
+  | { kind: "marker_present"; value: string }
+  /**
+   * The out-of-band canary named by this token ({{var}} filled in) must NOT have been called. The test asks the
+   * address in YOF_CANARY_CHECK_URL (?token=...; it answers {"hits": n}); without that address the step fails and says
+   * so, it never passes unchecked.
+   */
+  | { kind: "canary_hit"; token: string }
+  /** Across the repeats, at most this many answers may be a success (a coupon or a reset link works once). */
+  | { kind: "count_at_most"; max: number };
 
 export interface ReplayStep {
   as: As;
@@ -58,6 +70,12 @@ export interface ReplayStep {
   cleanup?: boolean;
   repeat?: number;
   expect?: Expect;
+  /**
+   * Which part of a differential this step is (./engage/differential.ts): the record being planted, the owner's own
+   * read (positive control), the other role's identical request (the test), or a request for an id that does not
+   * exist (negative control). Only the verifier reads it; a regression test runs the steps in order as before.
+   */
+  leg?: "plant" | "positive" | "test" | "negative";
 }
 /** A value derived from two kept answers: the first text in `from[0]` that is not in `from[1]`. */
 export interface DeriveStep { derive: { name: string; from: [string, string] } }
@@ -198,6 +216,15 @@ async function yofReplay(spec, env) {
       if (e.kind === "no_internal" && ok(last.status) && internal(text)) failures.push(where + " showed internal details");
       if (e.kind === "no_claimed_action" && ok(last.status) && claimed(text)) failures.push(where + " said it acted without asking first");
       if (e.kind === "short_answer" && ok(last.status) && text.length >= e.max) failures.push(where + " gave an answer of " + text.length + " characters");
+      if (e.kind === "marker_absent") { const v = subText(e.value); if (v && text.includes(v)) failures.push(where + " returned another account's test record"); }
+      if (e.kind === "marker_present") { const v = subText(e.value); if (!v || !ok(last.status) || !text.includes(v)) failures.push(where + " did not return the account's own test record (HTTP " + last.status + "), so the test shows nothing"); }
+      if (e.kind === "count_at_most") { const n = statuses.filter(ok).length; if (n > e.max) failures.push(where + " succeeded " + n + " times, at most " + e.max + " allowed"); }
+      if (e.kind === "canary_hit") {
+        const u = String(env.YOF_CANARY_CHECK_URL || ""); const tok = subText(e.token);
+        if (!u) failures.push(where + " could not be checked: set YOF_CANARY_CHECK_URL");
+        else { let hits = -1; try { const c = await fetch(u + (u.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(tok), { redirect: "manual" }); hits = Number((await c.json()).hits); } catch (x) { hits = -1; }
+          if (!(hits >= 0)) failures.push(where + " could not be checked: the canary address did not answer"); else if (hits > 0) failures.push(where + " made the app call the canary address"); }
+      }
       if (e.kind === "cookie_flags") {
         const sc = typeof last.headers.getSetCookie === "function" ? last.headers.getSetCookie() : [last.headers.get("set-cookie") || ""];
         const weak = sc.filter(Boolean).filter((c) => !/;\s*httponly/i.test(c) || !/;\s*samesite=/i.test(c) || (base.startsWith("https:") && !/;\s*secure/i.test(c)));

@@ -90,7 +90,7 @@ describe("the scope and rules-of-engagement document", () => {
     expect(onlyA).toContain("### Sign-in (`auth`): will run");
 
     const light = doc(shop(), "light");
-    expect(light).toContain("- **Mode: light.** Read-only checks");
+    expect(light).toContain("- **Mode: light.** Read-only: only GET and HEAD requests are sent.");
     expect(light).toContain("### Tenant barrier (`tenant`): skipped\n\nSkipped because a light run is read-only: it creates no test record and sends no message to the assistant.");
     expect(light).toContain("The sign-in rate limit is not tested (a light run is read-only).");
 

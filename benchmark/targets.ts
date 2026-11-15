@@ -209,3 +209,149 @@ export const NODEGOAT: Target = {
 
 export const TARGETS: readonly Target[] = [JUICE_SHOP, NODEGOAT];
 export const targetById = (id: string): Target | undefined => TARGETS.find((t) => t.id === id);
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+// Engagement library (Y24 stage 4): the seeded fixture (oss/yof/test/fixtures/vuln-app.ts). It holds one instance of
+// each attack class and a safe twin, so every technique has a known true hit and a known true miss. This is NOT one
+// of the public TARGETS above (it has no external official list to score against): it is the private seed set the
+// design calls for. NOT YET RUN as a scored benchmark here, only as the hit/miss unit test engage-library.test.ts.
+// The held-out operators stay for a later private run. Status stays "not_yet_run" until the benchmark run is wired.
+// ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+export type FixtureStatus = "not_yet_run";
+/** One technique's expected result on the fixture (true hit) and its twin (true miss). */
+export interface FixtureExpectation {
+  technique: string;
+  rule: string;
+  /** The expected outcome on the vulnerable app: it must demonstrate or need validation. */
+  onVulnerable: "violated" | "needs_validation";
+  /** The expected outcome on the safe twin: silence. */
+  onTwin: "held" | "not_testable";
+  /** A technique whose safety class the default rules forbid (the command marker-echo) is never run; the governor refuses it. */
+  governorRefuses?: boolean;
+  why: string;
+}
+
+export interface FixtureTarget {
+  id: "yof-seed-fixture";
+  name: string;
+  status: FixtureStatus;
+  source: string;
+  expectations: readonly FixtureExpectation[];
+}
+
+export const FIXTURE_BENCH: FixtureTarget = {
+  id: "yof-seed-fixture",
+  name: "yof seeded fixture (one of each class, plus a safe twin)",
+  status: "not_yet_run",
+  source: "oss/yof/test/fixtures/vuln-app.ts",
+  expectations: [
+    { technique: "access.id_swap", rule: "attack.tenant_read", onVulnerable: "violated", onTwin: "held", why: "Another account reads a note by its id on the vulnerable app; the twin answers 404." },
+    { technique: "access.anon_read", rule: "attack.auth_bypass", onVulnerable: "violated", onTwin: "held", why: "A note reads with no sign-in on the vulnerable app; the twin answers 401." },
+    { technique: "access.role_swap", rule: "attack.rbac_escalation", onVulnerable: "violated", onTwin: "held", why: "A member opens the admin notes route on the vulnerable app; the twin answers 403." },
+    { technique: "access.sequential_id", rule: "attack.tenant_read", onVulnerable: "violated", onTwin: "held", why: "Numeric ids follow each other and the next one is readable; the twin uses unguessable ids and refuses." },
+    { technique: "access.id_moved", rule: "attack.tenant_read", onVulnerable: "needs_validation", onTwin: "not_testable", why: "The fixture names no query or body alternate for the id, so this is not testable on it (listed for a later fixture)." },
+    { technique: "access.method_override", rule: "attack.tenant_write", onVulnerable: "needs_validation", onTwin: "held", why: "The fixture does not honour a method-override header, so the plain refusal control is not set up (listed for a later fixture)." },
+    { technique: "access.content_type", rule: "attack.tenant_write", onVulnerable: "needs_validation", onTwin: "held", why: "The fixture accepts only JSON, so the alternate content type control is not set up (listed for a later fixture)." },
+    { technique: "access.cross_write", rule: "attack.tenant_write", onVulnerable: "violated", onTwin: "held", why: "Another account changes a note on the vulnerable app and the owner reads the change; the twin answers 404." },
+    { technique: "mass_assign.update", rule: "attack.mass_assignment", onVulnerable: "violated", onTwin: "held", why: "An extra role field sticks on update on the vulnerable app; the twin ignores it." },
+    { technique: "mass_assign.create", rule: "attack.mass_assignment", onVulnerable: "violated", onTwin: "held", why: "An extra role field sticks on create on the vulnerable app; the twin ignores it." },
+    { technique: "injection.sql_boolean", rule: "attack.query_injection", onVulnerable: "needs_validation", onTwin: "held", why: "A boolean condition added to the search decides whether the run's own record is found; the twin matches literally." },
+    { technique: "injection.sql_error", rule: "attack.query_injection", onVulnerable: "needs_validation", onTwin: "held", why: "An unbalanced quote brings a database error on the vulnerable app; the twin does not." },
+    { technique: "injection.sql_time", rule: "attack.query_injection", onVulnerable: "needs_validation", onTwin: "not_testable", why: "Timing tests are off except where the record allows them; the fixture does not model a timed query." },
+    { technique: "injection.template", rule: "attack.template_injection", onVulnerable: "violated", onTwin: "held", why: "A sum in template brackets is evaluated on the vulnerable app; the twin escapes it." },
+    { technique: "injection.xss_reflected", rule: "attack.unescaped_markup", onVulnerable: "violated", onTwin: "held", why: "A test element comes back as markup on the vulnerable app; the twin escapes it." },
+    { technique: "injection.xss_stored", rule: "attack.unescaped_markup", onVulnerable: "needs_validation", onTwin: "held", why: "The fixture serves the stored note as JSON, so the stored-markup path is not exercised here (listed for a later fixture)." },
+    { technique: "injection.command", rule: "attack.command_injection", onVulnerable: "violated", onTwin: "held", governorRefuses: true, why: "An echo of a sum runs on the vulnerable app; the twin does not. Run directly only: the default rules forbid the command class." },
+    { technique: "logic.numeric_bound", rule: "attack.number_out_of_bounds", onVulnerable: "violated", onTwin: "held", why: "A negative quantity is stored on the vulnerable app; the twin refuses it." },
+    { technique: "logic.state_skip", rule: "attack.step_skipped", onVulnerable: "needs_validation", onTwin: "not_testable", why: "The fixture does not model an ordered flow yet (listed for a later fixture)." },
+    { technique: "logic.single_use", rule: "attack.single_use_reuse", onVulnerable: "violated", onTwin: "held", why: "A once-only action counts twice on the vulnerable app; the twin refuses the second." },
+    { technique: "race.parallel_use", rule: "attack.race_condition", onVulnerable: "violated", onTwin: "held", why: "Parallel requests all pass the limit on the vulnerable app; the twin refuses all but one." },
+    { technique: "files.content_mismatch", rule: "attack.unsafe_upload", onVulnerable: "violated", onTwin: "held", why: "An HTML file named .png is served as a page on the vulnerable app; the twin serves it as a download." },
+    { technique: "files.active_type", rule: "attack.unsafe_upload", onVulnerable: "violated", onTwin: "held", why: "An HTML or SVG file is served as a page on the vulnerable app; the twin serves it as a download." },
+    { technique: "files.path_name", rule: "attack.unsafe_upload", onVulnerable: "needs_validation", onTwin: "held", why: "The vulnerable app keeps the folder part of the uploaded name; the twin chooses its own name." },
+    { technique: "ssrf.canary", rule: "attack.server_fetch", onVulnerable: "violated", onTwin: "held", why: "On a real run the server fetches the public https canary; the unit test asserts the fixture's local http canary is refused as a safety behaviour." },
+    { technique: "deserial.object_stream", rule: "attack.unsafe_deserializer", onVulnerable: "needs_validation", onTwin: "held", why: "A typed body brings a deserializer error on the vulnerable app; the twin refuses the media type." },
+    { technique: "deserial.type_hint", rule: "attack.unsafe_deserializer", onVulnerable: "needs_validation", onTwin: "held", why: "A type-hint body is answered on the vulnerable app; the twin refuses it." },
+    { technique: "crypto.sequential_ids", rule: "attack.predictable_token", onVulnerable: "needs_validation", onTwin: "held", why: "Record ids follow each other on the vulnerable app; the twin uses unguessable ids." },
+    { technique: "crypto.short_token", rule: "attack.predictable_token", onVulnerable: "needs_validation", onTwin: "held", why: "Needs a short session value; the fixture's bearer session models this in a later variant." },
+    { technique: "crypto.predictable_token", rule: "attack.predictable_token", onVulnerable: "needs_validation", onTwin: "held", why: "Needs two sign-ins that share a prefix; the fixture's bearer session models this in a later variant." },
+    { technique: "csrf.state_change", rule: "attack.csrf", onVulnerable: "violated", onTwin: "held", why: "Needs a cookie session; covered in the engage core tests, modelled by a later cookie fixture." },
+    { technique: "session.sign_out", rule: "attack.session_not_ended", onVulnerable: "violated", onTwin: "held", why: "Needs a server-side session; modelled by a later session fixture." },
+    { technique: "session.reset_reuse", rule: "attack.single_use_reuse", onVulnerable: "violated", onTwin: "held", why: "Needs a reset flow; modelled by a later session fixture." },
+    { technique: "session.jwt_none", rule: "attack.token_unverified", onVulnerable: "violated", onTwin: "held", why: "Needs a signed-token session; modelled by a later JWT fixture." },
+    { technique: "session.jwt_signature", rule: "attack.token_unverified", onVulnerable: "violated", onTwin: "held", why: "Needs a signed-token session; modelled by a later JWT fixture." },
+    { technique: "session.cookie_flags", rule: "attack.weak_session_cookie", onVulnerable: "needs_validation", onTwin: "held", why: "Needs a cookie set at sign-in; modelled by a later cookie fixture." },
+    { technique: "session.password_limit", rule: "attack.no_rate_limit", onVulnerable: "needs_validation", onTwin: "held", why: "Needs a sign-in request; modelled by a later session fixture." },
+    { technique: "ai.prompt_extraction", rule: "attack.prompt_extraction", onVulnerable: "violated", onTwin: "held", why: "The assistant hands out its instructions on the vulnerable app; the twin does not." },
+    { technique: "ai.prompt_injection", rule: "attack.prompt_injection", onVulnerable: "violated", onTwin: "held", why: "The assistant obeys a hidden instruction on the vulnerable app; the twin does not." },
+    { technique: "ai.indirect_injection", rule: "attack.indirect_injection", onVulnerable: "violated", onTwin: "held", why: "The assistant obeys a hidden instruction in pasted text on the vulnerable app; the twin does not." },
+    { technique: "ai.unsafe_output", rule: "attack.unsafe_output", onVulnerable: "violated", onTwin: "held", why: "The assistant returns live markup on the vulnerable app; the twin does not." },
+    { technique: "ai.jailbreak", rule: "attack.jailbreak", onVulnerable: "violated", onTwin: "held", why: "The assistant drops its rules on the vulnerable app; the twin does not." },
+    { technique: "ai.data_disclosure", rule: "attack.data_disclosure", onVulnerable: "violated", onTwin: "held", why: "The assistant names internal details on the vulnerable app; the twin does not." },
+    { technique: "ai.excessive_agency", rule: "attack.excessive_agency", onVulnerable: "violated", onTwin: "held", why: "The assistant claims an outward action on the vulnerable app; the twin does not." },
+  ],
+};
+
+// ── rules2 (12 Nov 2026): the code and config patterns, NOT YET RUN ──────────────────────────────────────────────
+/**
+ * What the second rule set (src/rules2: code and config patterns, read offline by `yof check`) is expected to do on
+ * the two pinned sources. WRITTEN BEFORE ANY RUN, from reading the rules and from what the builder knows of the two
+ * projects' source at the pinned commits; nothing here has been checked against a run, and the benchmark was not
+ * started to write it. Every entry therefore has status "not_yet_run".
+ *
+ * These are NOT part of the scoring: score.ts reads `mapping` above and nothing else, so the published numbers do not
+ * change. When the patterns become a detector source of the benchmark, each entry moves into `mapping` with its item
+ * key checked against the pinned official list (a key that is not in the list fails the scoring there), and the
+ * reason below stays as the `ifMissed` text, word for word, so a miss is never explained away afterwards.
+ *
+ *   expect "hit"   the rule should fire on the named file, for the stated reason
+ *   expect "miss"  the rule should stay quiet, and the reason says which limit of the rule causes it
+ */
+export interface Rules2Prediction {
+  target: Target["id"];
+  /** The official item this is about (Juice Shop: the challenge key; NodeGoat: the tutorial topic). To be checked against the pinned list before it is scored. */
+  item: string;
+  rule: string;
+  expect: "hit" | "miss";
+  /** Where in the source (repository-relative), when one place is meant. */
+  file?: string;
+  /** Written first: why the rule should fire, or which limit of the rule makes it miss. */
+  reason: string;
+  status: "not_yet_run";
+}
+const P = (target: Target["id"], item: string, rule: string, expect: "hit" | "miss", file: string | undefined, reason: string): Rules2Prediction =>
+  ({ target, item, rule, expect, ...(file ? { file } : {}), reason, status: "not_yet_run" });
+
+export const RULES2_PREDICTIONS: readonly Rules2Prediction[] = [
+  // OWASP Juice Shop
+  P("juice-shop", "loginAdminChallenge", "inside.code_sql_injection", "hit", "routes/login.ts", "The sign-in query is a template literal with req.body.email inside it, handed to sequelize.query in the same handler."),
+  P("juice-shop", "unionSqlInjectionChallenge", "inside.code_sql_injection", "hit", "routes/search.ts", "The search term is read from req.query.q into a local name and placed in a template literal given to sequelize.query in the same handler."),
+  P("juice-shop", "noSqlCommandChallenge", "inside.code_nosql_injection", "hit", "routes/showProductReviews.ts", "A $where string is built with + from req.params.id and passed to a find call. Depends on the rule seeing a MongoDB-style library: the shop uses MarsDB, which is on the rule's list only if package.json names it."),
+  P("juice-shop", "noSqlReviewsChallenge", "inside.code_nosql_injection", "hit", "routes/updateProductReviews.ts", "The update filter is { _id: req.body.id }: a value from the request body used as it is."),
+  P("juice-shop", "ssrfChallenge", "inside.code_ssrf", "hit", "routes/profileImageUrlUpload.ts", "The image address is read from req.body.imageUrl and fetched by the server in the same handler, with no host check the rule recognises."),
+  P("juice-shop", "redirectChallenge", "inside.code_open_redirect", "miss", "routes/redirect.ts", "The handler calls an allow-list function before it redirects. The rule treats any allow-list check in the handler as a guard and cannot see that this one matches by substring and can be bypassed."),
+  P("juice-shop", "rceChallenge", "inside.code_eval_input", "miss", "routes/b2bOrder.ts", "The order text runs through vm.runInContext, but the code string handed to vm is a fixed literal and the request value arrives through the sandbox object. The rule needs request input as the code itself."),
+  P("juice-shop", "sstiChallenge", "inside.code_template_injection", "miss", "routes/userProfile.ts", "The template is built from the user's stored name, read from the database, not from the request in the same function. Values that come back from a database are out of scope."),
+  P("juice-shop", "reflectedXssChallenge", "inside.code_xss_sink", "miss", undefined, "The page is an Angular app that trusts the value with bypassSecurityTrustHtml. The rule knows dangerouslySetInnerHTML, innerHTML, insertAdjacentHTML, document.write and HTML answers, not Angular's own bypass call."),
+  P("juice-shop", "localXssChallenge", "inside.code_xss_sink", "miss", undefined, "Same as the reflected one: Angular's bypassSecurityTrustHtml is not a sink the rule knows."),
+  P("juice-shop", "weirdCryptoChallenge", "inside.crypto_weak_hash", "miss", "lib/insecurity.ts", "Passwords are hashed with MD5 in a helper whose argument is called data, and the callers pass the password in from other files. The rule needs a password or token name at the hash call itself."),
+  P("juice-shop", "jwtUnsignedChallenge", "inside.code_jwt_unverified", "miss", "lib/insecurity.ts", "The unsigned token is accepted because of the old library versions pinned in package.json (the package check's finding), not because the code allows the none algorithm in so many words."),
+  P("juice-shop", "jwtForgedChallenge", "inside.crypto_hardcoded_key", "hit", "lib/insecurity.ts", "An HMAC helper passes a text literal as the key to crypto.createHmac. This is a neighbour of the challenge (a fixed key in the code), not the forged-token weakness itself, so it would be scored as root at most."),
+  P("juice-shop", "fileWriteChallenge", "inside.code_upload_unchecked", "hit", "routes/fileUpload.ts", "The upload handlers build the stored path from the client's file name (file.originalname) with path.join or path.resolve."),
+  P("juice-shop", "uploadTypeChallenge", "inside.code_upload_unchecked", "miss", "routes/fileUpload.ts", "The type check exists in the code and is only applied in the browser. The rule sees a type check in the file and stays quiet about the content type; it cannot tell that the server never enforces it."),
+  P("juice-shop", "csrfChallenge", "inside.code_csrf_missing", "miss", undefined, "The shop signs people in with a JWT in an Authorization header and a cookie copy, not with express-session or cookie-session. The rule reads only those two session libraries, and any sign of token sign-in silences it."),
+  P("juice-shop", "exposedCredentialsChallenge", "inside.cred_password_literal", "miss", undefined, "The test credentials sit in the Angular front end as properties named testingUsername and testingPassword inside a component; the value has no digit or symbol the rule requires of a password literal, so it reads as a label."),
+  P("juice-shop", "weakPasswordChallenge", "inside.cred_default_login", "miss", "data/static/users.yml", "The seed users have weak passwords, but next to an email address, not next to a user name such as admin or root. The rule needs a well-known user name within three lines."),
+  P("juice-shop", "knownVulnerableComponentChallenge", "inside.docker_base_eol", "miss", "Dockerfile", "The Dockerfile builds on a current Node release line and a distroless image, neither past its end of life in the table dated 2026-11-12."),
+  // OWASP NodeGoat
+  P("nodegoat", "a1", "inside.code_eval_input", "hit", "app/routes/contributions.js", "The contribution amounts are passed from req.body straight to eval in the handler."),
+  P("nodegoat", "a1", "inside.code_nosql_injection", "miss", "app/data/allocations-dao.js", "The $where string is built in a data-access function from an argument. The request is read in the route file and passed in, and a value that crosses a function is out of scope."),
+  P("nodegoat", "a2", "inside.crypto_weak_hash", "miss", "app/data/user-dao.js", "Passwords are stored as plain text (the bcrypt lines are commented out). The rule looks for a weak hash and has nothing to match when there is no hash at all."),
+  P("nodegoat", "a2", "inside.code_cookie_flags", "miss", "server.js", "The session cookie's httpOnly and secure options are commented out, not set to false. The rule reports a session only when its cookie options turn a protection off in so many words."),
+  P("nodegoat", "a6", "inside.crypto_hardcoded_key", "miss", "config/env/all.js", "The crypto key and cookie secret end in _here, which the placeholder guard takes for sample values. They are in fact the values the app runs with."),
+  P("nodegoat", "a8", "inside.code_csrf_missing", "miss", "server.js", "The app uses express-session and has state-changing routes, but the CSRF middleware is present as commented-out code. The project-wide guard reads the text of every file, comments included, so the word csrf silences the rule."),
+  P("nodegoat", "a10", "inside.code_open_redirect", "hit", "app/routes/index.js", "The /learn route redirects to req.query.url with no check in the handler."),
+  P("nodegoat", "ssrf", "inside.code_ssrf", "hit", "app/routes/research.js", "The address is built as req.query.url + req.query.symbol and fetched with needle.get in the same handler, with no host check."),
+  P("nodegoat", "a9", "inside.docker_base_eol", "hit", "Dockerfile", "The Dockerfile builds on an old Node release line that is past its end of life in the table dated 2026-11-12. Only if the pinned commit still names such a tag."),
+];

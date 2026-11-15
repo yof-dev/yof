@@ -92,6 +92,10 @@ export const KEY_WORDS: Record<string, RuleWords> = {
     why: "Its name says it should stay private, but every visitor's browser downloads it. If it is a real secret, treat it as leaked.",
     fix: "A setting whose name says it is secret (it contains SECRET, PRIVATE, PASSWORD or service_role) is built into the browser code because its name starts with VITE_, NEXT_PUBLIC_, REACT_APP_ or EXPO_PUBLIC_. Rename it without that prefix, read it only in server code, and move the code that uses it to the server. Never paste the real key into this chat, never print it, and do not invent a replacement key. Tell me when the code no longer contains it, so I can create a new key in the provider's dashboard and delete the old one (the old one has been public, so it must be replaced).",
   },
+  "secret.google_api_key": {
+    why: "It is not part of a Firebase setup, so it may be a Maps, YouTube, Gemini or server key. Without limits in Google Cloud, anyone can use it and you pay.",
+    fix: "A Google API key (it starts with AIza) is in the browser code, and the code around it is not a Firebase config. Find what it is used for. If the page itself calls the API with it (Maps, for example), leave it in place and tell me to restrict it in the Google Cloud console: only my site's addresses (HTTP referrers) and only the APIs the page needs. If it is a server key (Gemini or another Cloud API), move every call that uses it to the server, read it from a secret setting there, and tell me so I can create a new key and delete the old one. Never paste the real key into this chat, never print it, and do not invent a replacement key.",
+  },
   "public.supabase_anon": {
     why: "This key is meant to be public. What protects your data is Row Level Security on each table, so that is what to check.",
     fix: "The Supabase anon key is meant to be public, so leave it in place. Check instead that Row Level Security is turned on for every table and that each table has policies, so a visitor can only read and change their own rows. List any table without RLS or without policies.",
@@ -114,7 +118,10 @@ const FALLBACK: RuleWords = {
 const registry = (f: DependencyFinding) => (f.ecosystem === "npm" ? "npm" : "PyPI");
 
 const PACKAGE_FIX: Record<DependencyFinding["issue"], (f: DependencyFinding) => string> = {
-  made_up: (f) => `The dependency "${f.name}" in ${f.file} does not exist on ${registry(f)}. Find out which real package the code needs, change the name to it (or remove the dependency if nothing uses it), and update the lockfile. Do not invent a package name: if you are not sure, tell me instead.`,
+  made_up: (f) => f.unconfirmed
+    // a scoped name whose scope is not public may be a private package (the yof app's inside.dep_maybe_private words)
+    ? `The dependency "${f.name}" in ${f.file} is not on the public ${registry(f)} registry, and its scope was not seen to be public, so it may be a private package of mine or a made-up name. Check where it is installed from: a private registry set in .npmrc, a workspace of this repository, or a git or file reference. If it is private, point its scope at my private registry in .npmrc so an install can never take it from the public registry, and tell me so I can mark it. If nobody knows the package, do not install it: find which real package was meant, replace the name and update the lockfile.`
+    : `The dependency "${f.name}" in ${f.file} does not exist on ${registry(f)}. Find out which real package the code needs, change the name to it (or remove the dependency if nothing uses it), and update the lockfile. Do not invent a package name: if you are not sure, tell me instead.`,
   brand_new: (f) => `The dependency "${f.name}" in ${f.file} was first published very recently. Check that it is the package the code really needs, from the publisher you expect. If it is not, replace it with the well-known package or remove it, and update the lockfile.`,
   lookalike: (f) => `The dependency "${f.name}" in ${f.file} is one or two letters away from the popular package "${f.similarTo ?? ""}". If the code meant "${f.similarTo ?? ""}", change the name and update the lockfile. If "${f.name}" really is the right one, tell me why.`,
   vulnerable: (f) => `The dependency "${f.name}"${f.version ? ` (${f.version})` : ""} in ${f.file} has a known security problem${f.advisory ? ` (${f.advisory})` : ""}. ${f.fixedIn ? `Update it to ${f.fixedIn} or newer` : "Update it to a version without this problem, or replace it if there is none yet"}, update the lockfile and run the tests.`,

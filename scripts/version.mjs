@@ -2,8 +2,9 @@
 /**
  * One version everywhere, before a release tag.
  *
- *   node scripts/version.mjs 0.2.1           set the version in package.json, both Actions' default `version` input and
- *                                            the CHANGELOG (the "Unreleased" notes move under "## 0.2.1 (YYYY-MM-DD)")
+ *   node scripts/version.mjs 0.2.1           set the version in package.json, both Actions' default `version` input,
+ *                                            the Claude Code hook's pinned @yof/cli and the CHANGELOG (the
+ *                                            "Unreleased" notes move under "## 0.2.1 (YYYY-MM-DD)")
  *   node scripts/version.mjs --check 0.2.1   change nothing; exit 1 unless all of them already say 0.2.1
  *                                            (the release workflow runs this before it publishes anything)
  *
@@ -15,7 +16,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const FILES = { pkg: "package.json", action: "action.yml", attack: "attack/action.yml", changelog: "CHANGELOG.md" };
+const FILES = { pkg: "package.json", action: "action.yml", attack: "attack/action.yml", hook: "integrations/claude-code/scripts/yof-hook.mjs", changelog: "CHANGELOG.md" };
 const read = (f) => readFileSync(join(ROOT, f), "utf8");
 
 /** The `version` input's default in an action.yml (the @yof/cli version the Action runs). */
@@ -26,6 +27,16 @@ export function actionVersion(yml) {
 export function setActionVersion(yml, v) {
   if (!actionVersion(yml)) throw new Error("no version input with a default");
   return yml.replace(/(\n {2}version:\n(?: {4}.*\n)*? {4}default: ")[^"]+(")/, `$1${v}$2`);
+}
+
+/** The @yof/cli version the Claude Code hook runs (`const YOF_CLI = "@yof/cli@x.y.z";`): pinned, never "latest". */
+export function hookVersion(src) {
+  const m = src.match(/\nconst YOF_CLI = "@yof\/cli@([^"]+)";\n/);
+  return m ? m[1] : null;
+}
+export function setHookVersion(src, v) {
+  if (!hookVersion(src)) throw new Error("the Claude Code hook has no pinned @yof/cli");
+  return src.replace(/(\nconst YOF_CLI = "@yof\/cli@)[^"]+(";\n)/, `$1${v}$2`);
 }
 
 /** Has the CHANGELOG a section for this version (with or without a date)? */
@@ -60,6 +71,7 @@ export function state() {
     pkg: JSON.parse(read(FILES.pkg)).version,
     action: actionVersion(read(FILES.action)),
     attack: actionVersion(read(FILES.attack)),
+    hook: hookVersion(read(FILES.hook)),
   };
 }
 
@@ -79,17 +91,18 @@ function main(argv) {
       console.error(`Version ${v} is not ready to release:\n  ${wrong.join("\n  ")}\nRun: node scripts/version.mjs ${v}`);
       return 1;
     }
-    console.log(`Version ${v}: package.json, action.yml, attack/action.yml and CHANGELOG.md agree.`);
+    console.log(`Version ${v}: package.json, action.yml, attack/action.yml, the Claude Code hook and CHANGELOG.md agree.`);
     return 0;
   }
   const pkg = JSON.parse(read(FILES.pkg));
   pkg.version = v;
   writeFileSync(join(ROOT, FILES.pkg), `${JSON.stringify(pkg, null, 2)}\n`);
   for (const f of [FILES.action, FILES.attack]) writeFileSync(join(ROOT, f), setActionVersion(read(f), v));
+  writeFileSync(join(ROOT, FILES.hook), setHookVersion(read(FILES.hook), v));
   const md = read(FILES.changelog);
   const date = new Date().toISOString().slice(0, 10);
   writeFileSync(join(ROOT, FILES.changelog), releaseChangelog(md, v, date));
-  console.log(`Set ${v} in package.json, action.yml, attack/action.yml and CHANGELOG.md (${date}).`);
+  console.log(`Set ${v} in package.json, action.yml, attack/action.yml, the Claude Code hook and CHANGELOG.md (${date}).`);
   console.log(`Next: commit, then tag v${v} on github.com/yof-dev/yof (the release workflow publishes from the tag).`);
   return 0;
 }
