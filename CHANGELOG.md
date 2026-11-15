@@ -4,7 +4,11 @@ All notable changes to `@yof/cli`. The format follows Keep a Changelog, and vers
 
 ## Unreleased
 
-## 0.4.0 (2026-11-15)
+## 0.4.1 (2026-11-15)
+
+- Release fix: 0.4.0 was tagged on GitHub but never published to npm. Its release check stopped on one test file that reads code from outside this repository. That file is gone from here; nothing else differs from 0.4.0. Everything listed under 0.4.0 below first ships in 0.4.1.
+
+## 0.4.0 (2026-11-15, tagged, not published)
 
 - `yof check`: code and config patterns. Seven families are read offline and never run: injection (request input reaching a SQL, NoSQL, shell, template, eval, HTML, redirect or server-fetch call in the same function), the code side of CSRF, unsafe object loaders, weak cryptography, passwords in code and config, upload handling, and containers and infrastructure files (Dockerfile, docker-compose, Kubernetes, Terraform). Each pattern is printed with its verdict (confirmed, needs validation, hardening note). Only a confirmed "fix now" pattern fails a check; `--profile strict` fails on every pattern that is not a note. `--no-patterns` leaves them out. The JavaScript and TypeScript rules need the `typescript` package next to yof and say so when it is missing. Built images, the running cluster and the cloud account are not read.
 - `yof attack`: "a normal member can open admin routes" now needs one of two proofs, and the finding says which. Either the member's answer holds a marker the admin test account planted in its own test record (in a full run with an admin account and an object in the config, the admin account creates one test record for this; it is deleted at the end). Or, where no marker can be planted (a list of users or accounts): the member's answer carries ids, emails or names of accounts other than its own, the admin's answer carries the same, a signed-out request to the route is refused in a different way, and it shows again on a fresh session. Before, "the member got the same data as the admin" was enough, so a public list or a settings page that reads the same for everyone counted as an open admin route. Those are now listed under "needs validation" with the reason. The same rule applies to the read-only member on admin routes.
