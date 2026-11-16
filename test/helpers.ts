@@ -55,6 +55,7 @@ export function fakeKeys(): [string, string, string][] {
     sendgrid: P("S", "G.", rand(22, undefined, 179), ".", rand(43, undefined, 181)),
     privateKey: P("-----BEGIN ", "RSA PRIVATE", " KEY-----"),
     firebase: P("AI", "za", rand(35, undefined, 191)),
+    google: P("AI", "za", rand(35, undefined, 193)),
     namedEnv: rand(32, undefined, 193),
   };
   return [
@@ -82,7 +83,10 @@ export function fakeKeys(): [string, string, string][] {
     ["secret.resend", `r = "${v.resend}"`, v.resend],
     ["secret.sendgrid", `s = "${v.sendgrid}"`, v.sendgrid],
     ["secret.private_key", `${v.privateKey}\nMIIE${rand(60, undefined, 197)}`, v.privateKey],
-    ["public.firebase_web", `apiKey: "${v.firebase}"`, v.firebase],
+    // 15 Nov 2026 (truth batch item 3): an AIza key is the public Firebase web key only inside a Firebase config;
+    // anywhere else it is a Google API key of unknown scope.
+    ["public.firebase_web", `const firebaseConfig = { apiKey: "${v.firebase}", authDomain: "shop-example.firebaseapp.com", projectId: "shop-example" };`, v.firebase],
+    ["secret.google_api_key", `const mapsKey = "${v.google}";`, v.google],
     ["secret.twilio", `const sid = "${twilioSid}";\nconst authToken = "${twilioToken}";`, twilioToken],
     ["secret.aws_key_id", `const id = "${awsId}";`, awsId],
     ["secret.aws", `const id = "${awsId}";\nconst secretAccessKey = "${awsSecret}";`, awsId],

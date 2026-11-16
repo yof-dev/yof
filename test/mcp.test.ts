@@ -327,7 +327,10 @@ describe("yof diff and the Claude Code plugin", () => {
     expect(Object.keys(hooks.hooks).sort()).toEqual(["PostToolUse", "Stop"]);
     expect(hooks.hooks.Stop![0]!.matcher).toBeUndefined();   // Stop takes no matcher
     const script = readFileSync(join(dir, "scripts", "yof-hook.mjs"), "utf8");
-    expect(script).toContain('"@yof/cli", "diff"');
+    // 11 Nov 2026: the hook runs the exact released version, never whatever npm serves at that moment.
+    const version = (JSON.parse(readFileSync(join(__dirname, "..", "package.json"), "utf8")) as { version: string }).version;
+    expect(script).toContain(`const YOF_CLI = "@yof/cli@${version}";`);
+    expect(script).toContain('["-y", YOF_CLI, "diff"');
     expect(script).toContain("stop_hook_active");   // never blocks twice
     expect(readFileSync(join(dir, "skills", "check-before-done", "SKILL.md"), "utf8")).toMatch(/^---\nname: check-before-done\ndescription: /);
     const market = JSON.parse(readFileSync(join(__dirname, "..", ".claude-plugin", "marketplace.json"), "utf8")) as { plugins: { source: string }[] };

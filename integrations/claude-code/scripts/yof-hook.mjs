@@ -20,7 +20,7 @@ const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.cwd
 // The exact released version, never "whatever npm serves today" (audit 2026-11-11 #17): an unpinned npx would run a
 // new release, or a hijacked one, on every edit without anyone choosing it. scripts/version.mjs moves this line with
 // the other version pins, and the release refuses a tag when they differ.
-const YOF_CLI = "@yof/cli@0.4.1";
+const YOF_CLI = "@yof/cli@0.4.2";
 const args = ["-y", YOF_CLI, "diff", "--json", ...(mode === "post-tool-use" ? ["--offline"] : [])];
 // Windows: npx is a .cmd file, which current Node only starts through a shell (audit 2026-11-11 #17). The arguments
 // are the fixed words above, never input from the project, so the shell sees nothing it could expand.

@@ -89,7 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: yof-dev/yof@v0.4.1
+      - uses: yof-dev/yof@v0.4.2
         with:
           path: .          # optional, default .
           offline: false   # optional, true = keys only, no registry lookups
@@ -293,7 +293,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: yof-dev/yof/attack@v0.4.1
+      - uses: yof-dev/yof/attack@v0.4.2
         env:
           YOF_ATTACK_A: ${{ secrets.YOF_ATTACK_A }}
           YOF_ATTACK_B: ${{ secrets.YOF_ATTACK_B }}

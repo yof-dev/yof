@@ -4,9 +4,11 @@ All notable changes to `@yof/cli`. The format follows Keep a Changelog, and vers
 
 ## Unreleased
 
-## 0.4.1 (2026-11-15)
+## 0.4.2 (2026-11-16)
 
-- Release fix: 0.4.0 was tagged on GitHub but never published to npm. Its release check stopped on one test file that reads code from outside this repository. That file is gone from here; nothing else differs from 0.4.0. Everything listed under 0.4.0 below first ships in 0.4.1.
+- Release fix: 0.4.0 and 0.4.1 were tagged on GitHub but never published to npm. The release check of 0.4.0 stopped on a test file that read code from outside this repository; that file is gone from here. The release check of 0.4.1 stopped on four tests that had not been updated for changes that are listed under 0.4.0 below (a Google API key is reported as its own rule outside a Firebase config, unsafe output counts only when the run's marker comes back inside the live markup, the Claude Code hook runs the exact released version). Only tests changed; the code is the same as in the 0.4.0 tag. Everything listed under 0.4.0 first ships in 0.4.2.
+
+## 0.4.1 (2026-11-15, tagged, not published)
 
 ## 0.4.0 (2026-11-15, tagged, not published)
 
